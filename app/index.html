@@ -657,14 +657,6 @@
     </div>
 
     <div class="chips-bar" id="recent-row" style="display:none"></div>
-    <div class="chips-bar">
-      <span class="chip-label">예시:</span>
-      <button type="button" class="chip example">J306A030102</button>
-      <button type="button" class="chip example">감속기 | reducer</button>
-      <button type="button" class="chip example">HOIST -복사본</button>
-      <button type="button" class="chip example">Air ride Spring</button>
-      <button type="button" class="chip example">2017년 2월 월간 통계</button>
-    </div>
 
     <div class="help-drawer" id="help-drawer">
       <div class="help-grid">
@@ -1661,7 +1653,6 @@ async function runSearch(offset = 0, { live = false } = {}) {
 
 /* Events */
 document.querySelector('#form').onsubmit = e => { e.preventDefault(); clearTimeout(liveTimer); runSearch(0, { live: false }); };
-document.querySelectorAll('.example').forEach(b => b.onclick = () => { q.value = b.textContent; syncInputs(); runSearch(0, { live: false }); });
 [catEl, extEl, sortEl].forEach(sel => sel.onchange = () => {
   if (q.value.trim().length >= 1 || hasAnyFilter()) runSearch(0, { live: false });
 });

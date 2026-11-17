@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.3.2] - 2026-11-17
+### Changed
+- `app/index.html`: 최근 검색어(`#recent-row`) 아래의 예시 키워드 섹션 제거로 상단 검색 영역 간소화
+
 ## [1.3.1] - 2026-11-17
 ### Fixed
 - `app/server.py`: 실시간 타이핑 중 브라우저의 `AbortController.abort()`가 이전 요청을 취소할 때 발생하는 Windows 소켓 `ConnectionAbortedError` (`[WinError 10053]`)를 `send()`, `do_POST()`, `do_GET()`에서 안전하게 무시해 콘솔 트레이스백 출력 제거
