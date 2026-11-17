@@ -21,6 +21,7 @@ SYNC_APP_FILES = (
     'start.py',
     'server.py',
     'catalog.py',
+    'mail_archive.py',
     'evidence.py',
     'related.py',
     'preview_excel.py',

@@ -12,6 +12,7 @@ if APP_DIR not in sys.path:
 from catalog import BASE, DB, ROOT, connect, clean, grams, init, scan, seed, process, state, norm
 from evidence import has_date, record_query, record_evidence, report_period
 from related import group_related
+from mail_archive import get_mail_cache, get_mail_by_id, resolve_mail_target_path, mail_snippet
 
 LABELS = {
     'ready': '본문 검색 가능',
@@ -377,10 +378,18 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
 
     folder_clean = norm(folder).strip('/')
     folder_prefix_slash = (folder_clean + '/') if folder_clean else ''
+    is_mail_folder = (folder_clean == '메일보관' or folder_clean.startswith('메일보관/'))
+    mail_only_ext = ext_filter in ('mail', '.mail') or parsed['ext_tokens'] == ['.mail']
+
+    include_docs = not is_mail_folder and category != '메일자료' and not mail_only_ext
+    include_mails = (not folder_clean or is_mail_folder) and category in ('', '메일자료')
 
     c = connect()
-    docs_cache, aliases_cache = get_catalog_cache(c)
-    rows = docs_cache if scope == 'body' else chain(docs_cache, aliases_cache)
+    docs_cache, aliases_cache = get_catalog_cache(c) if include_docs else ([], [])
+    mails_cache, mail_by_id = get_mail_cache() if include_mails else ([], {})
+    doc_rows = (docs_cache if scope == 'body' else chain(docs_cache, aliases_cache)) if include_docs else ()
+    mail_rows = mails_cache if include_mails else ()
+    rows = chain(doc_rows, mail_rows)
 
     hits = []
     matched_ids = set()
@@ -394,13 +403,18 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         doc_id = r['id']
         if doc_id in matched_ids:
             continue
+        is_mail = (r.get('kind') == 'mail')
         if category and r['category'] != category:
             continue
-        if allowed_exts_set is not None and r['extension'] not in allowed_exts_set:
-            continue
+        if allowed_exts_set is not None:
+            if is_mail:
+                if not mail_only_ext and not (r['att_exts'] & allowed_exts_set):
+                    continue
+            elif r['extension'] not in allowed_exts_set:
+                continue
         if folder_clean and r['path'] != folder_clean and not r['path'].startswith(folder_prefix_slash):
             continue
-        if scope == 'body' and r['status'] not in ('ready', 'partial'):
+        if not is_mail and scope == 'body' and r['status'] not in ('ready', 'partial'):
             continue
 
         path = r['path_clean']
@@ -431,66 +445,79 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
             if rx_terms:
                 score += sum(8 * bool(rx.search(name)) + 2 * bool(rx.search(path)) for rx in rx_terms)
 
-        hit = dict(
-            id=doc_id, path=r['path'], category=r['category'], status=r['status'],
-            status_label=LABELS[r['status']], score=score, extension=r['extension'],
-            size=r['size'], mtime=r['mtime'],
-        )
-        if r['matched_alias']:
-            hit['matched_alias'] = r['matched_alias']
-        if positive_query:
-            period = report_period(r['path'], positive_query)
-            if period:
-                hit['period_label'] = period['label']
-                if period['matches']:
+        if is_mail:
+            att_cnt = len(r['attachments'])
+            hit = dict(
+                id=doc_id, kind='mail', path=r['path'], category='메일자료', status='ready',
+                status_label=f'메일 자료 · 첨부 {att_cnt}개' if att_cnt else '메일 자료',
+                score=score, extension='.mail', size=r['size'], mtime=r['mtime'],
+                sender=r['sender'], date=r['date'], year=r['year'], source=r['source'],
+                attachments=[
+                    {'index': i, 'name': a.get('name', ''), 'ext': Path(a.get('name', '')).suffix.lower()}
+                    for i, a in enumerate(r['attachments'])
+                ],
+            )
+        else:
+            hit = dict(
+                id=doc_id, kind='doc', path=r['path'], category=r['category'], status=r['status'],
+                status_label=LABELS[r['status']], score=score, extension=r['extension'],
+                size=r['size'], mtime=r['mtime'],
+            )
+            if r['matched_alias']:
+                hit['matched_alias'] = r['matched_alias']
+            if positive_query:
+                period = report_period(r['path'], positive_query)
+                if period:
+                    hit['period_label'] = period['label']
+                    if period['matches']:
+                        hit['score'] += 100
+                        priority_ids.add(doc_id)
+            if record:
+                chunks = c.execute('select location,text,method from chunks where doc_id=?', (doc_id,)).fetchall()
+                proof = record_evidence(chunks, *record)
+                if proof:
+                    hit.update(location=proof['location'], snippet=proof['snippet'], evidence_label=proof['label'], method='record')
                     hit['score'] += 100
                     priority_ids.add(doc_id)
-        if record:
-            chunks = c.execute('select location,text,method from chunks where doc_id=?', (doc_id,)).fetchall()
-            proof = record_evidence(chunks, *record)
-            if proof:
-                hit.update(location=proof['location'], snippet=proof['snippet'], evidence_label=proof['label'], method='record')
-                hit['score'] += 100
-                priority_ids.add(doc_id)
-            else:
-                hit['evidence_label'] = '문서 내 검색어 일치 · 같은 기록은 미확인'
-        if drawing_numbers and r['extension'] == '.pdf' and r['status'] == 'partial':
-            best = None
-            best_score = (0, 0)
-            for chunk in c.execute(
-                "select location,text,method from chunks where doc_id=? and method='vision-title' order by rowid",
-                (doc_id,),
-            ):
-                chunk_text = clean(chunk['text'])
-                title_numbers = {
-                    DRAWING_SPACED_NUMBER.sub(r'\1\2', number)
-                    for number in DRAWING_TITLE_NUMBER.findall(chunk_text)
-                }
-                exact_count = len(drawing_numbers.intersection(title_numbers))
-                if exact_count:
-                    sc = (exact_count, sum(bool(pattern.search(chunk_text)) for pattern in patterns))
-                    if sc > best_score:
-                        best, best_score = chunk, sc
-            if best is not None:
-                drawing_chunks[doc_id] = best
-                if best_score == (len(drawing_numbers), len(patterns)):
-                    priority_ids.add(doc_id)
-        if qc_title_patterns and r['extension'] == '.pdf' and r['status'] == 'partial' and re.search(r'(?<![a-z0-9])qc(?![a-z0-9])', path):
-            for chunk in c.execute("select location,text,method from chunks where doc_id=? and method='vision-title' order by rowid", (doc_id,)):
-                if all(pattern.search(clean(chunk['text'])) for pattern in qc_title_patterns):
-                    drawing_chunks[doc_id] = chunk
-                    priority_ids.add(doc_id)
-                    break
-        if not record and context_patterns and all(pattern.search(body) for pattern in context_patterns):
-            chunks = c.execute('select location,text,method from chunks where doc_id=? order by rowid', (doc_id,))
-            for chunk in chunks:
-                chunk_text = clean(chunk['text'])
-                if all(pattern.search(chunk_text) for pattern in context_patterns):
-                    context_chunks[doc_id] = chunk
-                    break
-        if (length_patterns and doc_id not in context_chunks and r['extension'] in ('.xls', '.xlsx', '.xlsm')
-                and all(pattern.search(body) for pattern in equipment_patterns)):
-            split_length_rows.add(doc_id)
+                else:
+                    hit['evidence_label'] = '문서 내 검색어 일치 · 같은 기록은 미확인'
+            if drawing_numbers and r['extension'] == '.pdf' and r['status'] == 'partial':
+                best = None
+                best_score = (0, 0)
+                for chunk in c.execute(
+                    "select location,text,method from chunks where doc_id=? and method='vision-title' order by rowid",
+                    (doc_id,),
+                ):
+                    chunk_text = clean(chunk['text'])
+                    title_numbers = {
+                        DRAWING_SPACED_NUMBER.sub(r'\1\2', number)
+                        for number in DRAWING_TITLE_NUMBER.findall(chunk_text)
+                    }
+                    exact_count = len(drawing_numbers.intersection(title_numbers))
+                    if exact_count:
+                        sc = (exact_count, sum(bool(pattern.search(chunk_text)) for pattern in patterns))
+                        if sc > best_score:
+                            best, best_score = chunk, sc
+                if best is not None:
+                    drawing_chunks[doc_id] = best
+                    if best_score == (len(drawing_numbers), len(patterns)):
+                        priority_ids.add(doc_id)
+            if qc_title_patterns and r['extension'] == '.pdf' and r['status'] == 'partial' and re.search(r'(?<![a-z0-9])qc(?![a-z0-9])', path):
+                for chunk in c.execute("select location,text,method from chunks where doc_id=? and method='vision-title' order by rowid", (doc_id,)):
+                    if all(pattern.search(clean(chunk['text'])) for pattern in qc_title_patterns):
+                        drawing_chunks[doc_id] = chunk
+                        priority_ids.add(doc_id)
+                        break
+            if not record and context_patterns and all(pattern.search(body) for pattern in context_patterns):
+                chunks = c.execute('select location,text,method from chunks where doc_id=? order by rowid', (doc_id,))
+                for chunk in chunks:
+                    chunk_text = clean(chunk['text'])
+                    if all(pattern.search(chunk_text) for pattern in context_patterns):
+                        context_chunks[doc_id] = chunk
+                        break
+            if (length_patterns and doc_id not in context_chunks and r['extension'] in ('.xls', '.xlsx', '.xlsm')
+                    and all(pattern.search(body) for pattern in equipment_patterns)):
+                split_length_rows.add(doc_id)
 
         hits.append(hit)
         matched_ids.add(doc_id)
@@ -517,6 +544,14 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
     page_hits = hits[offset:offset + limit]
 
     for h in page_hits:
+        if h.get('kind') == 'mail':
+            m_entry = mail_by_id.get(h['id'])
+            h['path_confirmed'] = True
+            h['original_available'] = False
+            loc = f"메일 · {h.get('year', '')}년" + (f" ({h['source']})" if h.get('source') else '')
+            snippet = mail_snippet(m_entry, all_snippet_patterns, browse_mode=browse_mode) if m_entry else ''
+            h.update(location=loc, snippet=snippet, method='mail')
+            continue
         h['path_confirmed'] = True
         h['original_available'] = h['extension'] in ORIGINAL_EXTENSIONS
         for original in h.get('related', {}).get('originals', ()):
@@ -595,7 +630,8 @@ def stats():
     counts = {r[0]: r[1] for r in c.execute('select status,count(*) from docs where present=1 group by status')}
     meta = {r[0]: r[1] for r in c.execute('select * from state')}
     c.close()
-    return dict(total=sum(counts.values()), counts=counts, labels=LABELS, state=meta, root_name=ROOT.name)
+    mails_cache, _ = get_mail_cache()
+    return dict(total=sum(counts.values()), mail_total=len(mails_cache), counts=counts, labels=LABELS, state=meta, root_name=ROOT.name)
 
 
 def top_folders():
@@ -610,7 +646,11 @@ def top_folders():
         ORDER BY cnt DESC, folder ASC
     """).fetchall()
     c.close()
-    return [{'name': r['folder'], 'path': '' if r['folder'] == '(루트)' else r['folder'], 'count': r['cnt'], 'size': r['total_size']} for r in rows]
+    folders = [{'name': r['folder'], 'path': '' if r['folder'] == '(루트)' else r['folder'], 'count': r['cnt'], 'size': r['total_size']} for r in rows]
+    mails_cache, _ = get_mail_cache()
+    if mails_cache:
+        folders.insert(0, {'name': '✉️ 메일보관 (전체)', 'path': '메일보관', 'count': len(mails_cache), 'size': sum(m['size'] for m in mails_cache)})
+    return folders
 
 
 def run_scan_once():
@@ -680,7 +720,16 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return json.loads(self.rfile.read(length))
 
-    def resolve_doc_path(self, doc_id, allowed_exts=None):
+    def resolve_target_path(self, doc_id, att_index=None, allowed_exts=None):
+        if doc_id < 0:
+            if att_index is not None and (type(att_index) is not int or att_index < 0):
+                return None, 400
+            p = resolve_mail_target_path(doc_id, att_index)
+            if p is None:
+                return None, 404
+            if allowed_exts is not None and p.suffix.lower() not in allowed_exts:
+                return None, 415
+            return p, 200
         c = connect()
         r = c.execute('select realpath,extension from docs where id=? and present=1', (doc_id,)).fetchone()
         c.close()
@@ -716,10 +765,13 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 return self.send(b'Bad request', status=400)
             doc_id = payload.get('id')
-            if type(doc_id) is not int or doc_id < 1:
+            att_index = payload.get('att_index')
+            if type(doc_id) is not int or doc_id == 0:
+                return self.send(b'Bad request', status=400)
+            if att_index is not None and (type(att_index) is not int or att_index < 0):
                 return self.send(b'Bad request', status=400)
             allowed_exts = OPEN_LOCAL_EXTENSIONS if route == '/api/open-local' else None
-            p, status_code = self.resolve_doc_path(doc_id, allowed_exts=allowed_exts)
+            p, status_code = self.resolve_target_path(doc_id, att_index=att_index, allowed_exts=allowed_exts)
             if status_code == 415:
                 return self.send('이 형식은 제목에서 열 수 없습니다. 파일 위치를 확인해 주세요.'.encode(), 'text/plain; charset=utf-8', 415)
             if status_code != 200 or p is None:
@@ -789,19 +841,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(json.dumps(result, ensure_ascii=False).encode())
 
             if u.path in ['/api/excel-preview', '/api/excel-image']:
-                c = connect()
-                r = c.execute('select realpath,extension from docs where id=? and present=1', (int(q['id'][0]),)).fetchone()
-                c.close()
-                if not r or r['extension'] not in ('.xlsx', '.xlsm', '.xls'):
+                doc_id = int(q['id'][0])
+                att_index = int(q['att'][0]) if 'att' in q else None
+                p, status_code = self.resolve_target_path(doc_id, att_index=att_index, allowed_exts=('.xlsx', '.xlsm', '.xls'))
+                if status_code != 200 or p is None:
                     return self.send(b'Not found', status=404)
-                p = Path(r['realpath']).resolve()
-                if not p.is_relative_to(ROOT.resolve()) or not p.is_file():
-                    return self.send(b'Not found', status=404)
+                ext = p.suffix.lower()
                 st = p.stat()
                 if st.st_size > 20000000:
                     return self.send('파일이 커서 미리보기할 수 없습니다. 원본을 열어 주세요.'.encode(), 'text/plain; charset=utf-8', 413)
                 if u.path == '/api/excel-image':
-                    if r['extension'] == '.xls':
+                    if ext == '.xls':
                         return self.send(b'Not found', status=404)
                     index = int(q.get('n', ['-1'])[0])
                     with zipfile.ZipFile(p) as z:
@@ -832,19 +882,46 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send('엑셀 미리보기를 열 수 없습니다. 원본을 확인해 주세요.'.encode(), 'text/plain; charset=utf-8', 503)
 
             if u.path in ['/api/detail', '/original']:
-                c = connect()
-                r = c.execute('select * from docs where id=? and present=1', (int(q['id'][0]),)).fetchone()
-                if not r:
+                doc_id = int(q['id'][0])
+                if doc_id < 0:
+                    if u.path == '/api/detail':
+                        m = get_mail_by_id(doc_id)
+                        if not m:
+                            return self.send(b'Not found', status=404)
+                        payload = {
+                            'path': m['path'],
+                            'kind': 'mail',
+                            'subject': m['subject'],
+                            'sender': m['sender'],
+                            'date': m['date'],
+                            'source': m['source'],
+                            'attachments': [
+                                {'index': i, 'name': a.get('name', ''), 'ext': Path(a.get('name', '')).suffix.lower()}
+                                for i, a in enumerate(m['attachments'])
+                            ],
+                            'parts': [{'location': f"발신: {m['sender']} · {m['date']}", 'text': m['body_text'], 'method': 'mail'}],
+                            'status': '메일 자료',
+                            'error': '',
+                        }
+                        return self.send(json.dumps(payload, ensure_ascii=False).encode())
+                    att_index = int(q['att'][0]) if 'att' in q else None
+                    p, status_code = self.resolve_target_path(doc_id, att_index=att_index, allowed_exts=ORIGINAL_EXTENSIONS)
+                    if status_code != 200 or p is None:
+                        return self.send(b'Not found', status=404)
+                else:
+                    c = connect()
+                    r = c.execute('select * from docs where id=? and present=1', (doc_id,)).fetchone()
+                    if not r:
+                        c.close()
+                        return self.send(b'Not found', status=404)
+                    if u.path == '/api/detail':
+                        parts = [dict(location=a, text=b, method=m) for a, b, m in c.execute('select location,text,method from chunks where doc_id=?', (r['id'],))]
+                        c.close()
+                        return self.send(json.dumps({'path': r['path'], 'parts': parts, 'status': LABELS[r['status']], 'error': r['error']}, ensure_ascii=False).encode())
                     c.close()
-                    return self.send(b'Not found', status=404)
-                if u.path == '/api/detail':
-                    parts = [dict(location=a, text=b, method=m) for a, b, m in c.execute('select location,text,method from chunks where doc_id=?', (r['id'],))]
-                    c.close()
-                    return self.send(json.dumps({'path': r['path'], 'parts': parts, 'status': LABELS[r['status']], 'error': r['error']}, ensure_ascii=False).encode())
-                c.close()
-                p = Path(r['realpath']).resolve()
-                if not p.is_relative_to(ROOT.resolve()) or not p.is_file() or p.suffix.lower() not in ORIGINAL_EXTENSIONS:
-                    return self.send(b'Not found', status=404)
+                    p = Path(r['realpath']).resolve()
+                    if not p.is_relative_to(ROOT.resolve()) or not p.is_file() or p.suffix.lower() not in ORIGINAL_EXTENSIONS:
+                        return self.send(b'Not found', status=404)
                 typ = mimetypes.guess_type(p.name)[0] or 'application/octet-stream'
                 disp = 'inline' if p.suffix.lower() == '.pdf' else 'attachment'
                 try:
@@ -912,6 +989,10 @@ def warm_cache():
         c = connect()
         get_catalog_cache(c)
         c.close()
+    except Exception:
+        pass
+    try:
+        get_mail_cache()
     except Exception:
         pass
 
