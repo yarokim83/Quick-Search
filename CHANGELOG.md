@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.3.1] - 2026-11-17
+### Fixed
+- `app/server.py`: 실시간 타이핑 중 브라우저의 `AbortController.abort()`가 이전 요청을 취소할 때 발생하는 Windows 소켓 `ConnectionAbortedError` (`[WinError 10053]`)를 `send()`, `do_POST()`, `do_GET()`에서 안전하게 무시해 콘솔 트레이스백 출력 제거
+
 ## [1.3.0] - 2026-11-17
 ### Added
 - **Everything 스타일 실시간 타이핑 즉시 검색 (`app/server.py`, `app/index.html`)**:

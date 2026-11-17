@@ -646,6 +646,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
+    def handle(self):
+        try:
+            super().handle()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
     def allowed_request(self):
         port = self.server.server_port
         return self.headers.get_all('Host') in ([f'127.0.0.1:{port}'], [f'localhost:{port}'])
@@ -656,14 +662,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def send(self, data, typ='application/json; charset=utf-8', status=200, frame_ancestors="'none'"):
         csp = f"default-src 'self'; img-src 'self' data:; frame-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors {frame_ancestors}"
-        self.send_response(status)
-        self.send_header('Content-Type', typ)
-        self.send_header('Cache-Control', 'no-store')
-        self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Content-Security-Policy', csp)
-        self.send_header('Content-Length', str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(status)
+            self.send_header('Content-Type', typ)
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Content-Security-Policy', csp)
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def parse_post_json(self):
         length = int(self.headers.get('Content-Length', '0'))
@@ -726,6 +735,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise OSError('invalid path')
                 subprocess.Popen(f'explorer.exe /select,"{p}"')
             return self.send(json.dumps({'ok': True}).encode())
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
         except (ValueError, KeyError, json.JSONDecodeError):
             return self.send(b'Bad request', status=400)
         except OSError:
@@ -877,12 +888,23 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
             self.send(b'Not found', status=404)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
         except (ValueError, KeyError, FileNotFoundError):
             self.send(b'Not found', status=404)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
         except Exception:
-            self.send(b'Request failed', status=500)
+            try:
+                self.send(b'Request failed', status=500)
+            except (ConnectionError, OSError):
+                pass
+
+
+class QuietHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
 
 
 def warm_cache():
@@ -902,7 +924,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     init()
     threading.Thread(target=warm_cache, daemon=True).start()
-    with ThreadingHTTPServer(('127.0.0.1', args.port), Handler) as server:
+    with QuietHTTPServer(('127.0.0.1', args.port), Handler) as server:
         if os.environ.get('HPNT_OPEN_BROWSER') == '1':
             import webbrowser
             threading.Timer(.2, lambda: webbrowser.open(f'http://127.0.0.1:{args.port}/')).start()
