@@ -106,8 +106,11 @@ def build_all():
 
     desktop_launcher = Path.home() / 'Desktop' / 'HPNT 업무검색.exe'
     if desktop_launcher.parent.is_dir():
-        shutil.copy2(launcher_exe, desktop_launcher)
-        print(f'[Copy] Desktop shortcut EXE: {desktop_launcher}')
+        try:
+            shutil.copy2(launcher_exe, desktop_launcher)
+            print(f'[Copy] Desktop shortcut EXE: {desktop_launcher}')
+        except PermissionError:
+            print(f'[Copy] Skipped (currently running in tray): {desktop_launcher}')
 
     # 2. Build standalone ZIP package
     zip_name = f'HPNT_Search_Windows_v{version}.zip'
@@ -172,13 +175,20 @@ def build_all():
     exe_mb = dist_exe.stat().st_size / (1024 * 1024)
     print(f'[Build] Created & verified SFX EXE: {dist_exe} ({exe_mb:.2f} MB) -> {chk2.stdout.strip()}')
 
-    # 4. Copy ZIP and SFX EXE to Desktop and Google Drive
+    # 4. Copy ZIP and SFX EXE to Desktop and Google Drive, cleaning old generated bundles
     for artifact in (dist_zip, dist_exe):
         for dest_dir in (Path.home() / 'Desktop', Path(r'G:\내 드라이브\HPNT_업무')):
             if dest_dir.is_dir():
                 target = dest_dir / artifact.name
                 shutil.copy2(artifact, target)
                 print(f'[Copy] Saved to: {target}')
+                for old in dest_dir.glob(f'HPNT_Search_Windows_v*{artifact.suffix}'):
+                    if old.name != artifact.name:
+                        try:
+                            old.unlink()
+                            print(f'[Cleanup] Removed old bundle: {old}')
+                        except OSError:
+                            pass
 
     return dist_zip, dist_exe
 

@@ -61,38 +61,38 @@
   }
 
   .app-shell {
-    max-width: 1640px;
+    max-width: 100%;
     margin: 0 auto;
-    padding: 12px 16px 28px;
+    padding: 6px 10px 12px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 6px;
   }
 
   /* Top Bar + Search Panel */
   .top-panel {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 14px;
-    padding: 14px 18px;
+    border-radius: 10px;
+    padding: 8px 12px;
     box-shadow: var(--shadow);
   }
   .top-bar {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: 8px;
     flex-wrap: wrap;
-    margin-bottom: 10px;
+    margin-bottom: 5px;
   }
   .brand-area {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     flex-wrap: wrap;
   }
   .brand-title {
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 800;
     color: var(--brand-dark);
     letter-spacing: -0.02em;
@@ -101,38 +101,39 @@
   .pill {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
-    padding: 3px 10px;
+    gap: 4px;
+    padding: 2px 8px;
     border-radius: 999px;
     background: var(--surface-soft);
     border: 1px solid var(--border);
-    font-size: 12px;
+    font-size: 11px;
     color: var(--muted);
   }
   .pill strong { color: var(--text); }
   .pill.brand { background: var(--brand-soft); color: var(--brand); border-color: #c3dfdb; font-weight: 700; }
   .pill.scanning { background: #eef6ff; color: #164e8c; border-color: #bfd9f9; }
-  .dot-live { width: 7px; height: 7px; border-radius: 50%; background: var(--brand); }
+  .dot-live { width: 6px; height: 6px; border-radius: 50%; background: var(--brand); }
   .scanning .dot-live { background: #1d6fd6; animation: pulse 1.2s infinite; }
   @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.3; } }
 
-  .top-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-  .btn-soft { padding: 6px 11px; font-size: 12.5px; font-weight: 600; background: var(--surface); }
+  .top-actions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .btn-soft { padding: 3px 8px; font-size: 11.5px; font-weight: 600; background: var(--surface); }
   .btn-primary {
     background: var(--brand);
     border-color: var(--brand);
     color: #fff;
     font-weight: 700;
-    padding: 10px 20px;
+    padding: 6px 14px;
+    font-size: 13px;
   }
   .btn-primary:hover:not(:disabled) { background: var(--brand-dark); border-color: var(--brand-dark); color: #fff; }
 
-  .search-row { display: flex; gap: 8px; align-items: stretch; }
-  .input-wrap { position: relative; flex: 1; display: flex; align-items: center; }
+  .search-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .input-wrap { position: relative; flex: 1; min-width: 240px; display: flex; align-items: center; }
   #q {
     width: 100%;
-    padding: 10px 84px 10px 13px;
-    font-size: 15px;
+    padding: 6px 76px 6px 11px;
+    font-size: 13.5px;
     border: 1.5px solid var(--border-strong);
     background: var(--surface);
     color: var(--text);
@@ -140,45 +141,45 @@
   #q:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px rgba(20, 101, 94, 0.14); }
   .kbd-hint {
     position: absolute;
-    right: 34px;
-    font-size: 11px;
+    right: 30px;
+    font-size: 10.5px;
     color: var(--muted);
     background: var(--surface-soft);
     border: 1px solid var(--border);
     border-radius: 4px;
-    padding: 1px 6px;
+    padding: 1px 5px;
     pointer-events: none;
   }
   #clear-q {
     position: absolute;
-    right: 6px;
+    right: 4px;
     border: none;
     background: transparent;
     color: var(--muted);
-    font-size: 18px;
-    padding: 3px 6px;
+    font-size: 16px;
+    padding: 2px 6px;
     display: none;
   }
   #clear-q.visible { display: block; }
 
-  .toolbar-row {
+  .sub-toolbar-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 10px;
+    gap: 8px;
     flex-wrap: wrap;
-    margin-top: 9px;
+    margin-top: 5px;
   }
   .quick-ops, .select-controls {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     flex-wrap: wrap;
   }
   .op-chip {
-    padding: 4px 9px;
+    padding: 2px 7px;
     border-radius: 999px;
-    font-size: 12px;
+    font-size: 11.5px;
     background: var(--surface-soft);
     border: 1px solid var(--border);
     color: var(--muted);
@@ -190,8 +191,8 @@
     font-weight: 700;
   }
   .select-controls select {
-    padding: 6px 9px;
-    font-size: 12.5px;
+    padding: 5px 8px;
+    font-size: 12px;
     background: var(--surface-soft);
     border-color: var(--border);
   }
@@ -204,8 +205,8 @@
   .view-toggle button {
     border: none;
     border-radius: 0;
-    padding: 6px 10px;
-    font-size: 12.5px;
+    padding: 5px 9px;
+    font-size: 12px;
     font-weight: 600;
     background: var(--surface-soft);
   }
@@ -217,39 +218,49 @@
   .chips-bar {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 4px;
     flex-wrap: wrap;
-    margin-top: 8px;
-    font-size: 12px;
+    margin-top: 0;
+    font-size: 11.5px;
   }
   .chip-label { color: var(--muted); font-weight: 600; }
   .chip {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    padding: 3px 9px;
+    gap: 3px;
+    padding: 1px 7px;
     border-radius: 999px;
     background: var(--surface-soft);
     border: 1px solid var(--border);
-    font-size: 12px;
+    font-size: 11.5px;
   }
-  .chip-del { border: none; background: transparent; padding: 0 2px; color: var(--muted); font-size: 13px; }
+  .chip-go {
+    border: none;
+    background: transparent;
+    padding: 0;
+    font: inherit;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .chip-del { border: none; background: transparent; padding: 0 2px; color: var(--muted); font-size: 12px; }
   .chip-del:hover { color: var(--danger); }
 
   .help-drawer {
-    margin-top: 10px;
-    padding: 10px 14px;
-    border-radius: 10px;
+    margin-top: 8px;
+    padding: 8px 12px;
+    border-radius: 8px;
     background: var(--surface-soft);
     border: 1px solid var(--border);
-    font-size: 12.5px;
+    font-size: 12px;
     display: none;
   }
   .help-drawer.open { display: block; }
   .help-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 8px;
+    gap: 6px;
   }
   .help-code {
     font-family: ui-monospace, Consolas, monospace;
@@ -259,52 +270,46 @@
     font-weight: 600;
   }
 
-  /* Active Filter Breadcrumbs */
-  .breadcrumb-bar {
+  /* Inline Filter Breadcrumbs inside Results Header */
+  .crumb-inline {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 10px;
+    gap: 5px;
     flex-wrap: wrap;
-    padding: 8px 14px;
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    font-size: 13px;
   }
-  .crumb-list { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .crumb-list { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
   .crumb-btn {
     border: 1px solid var(--border);
-    background: var(--surface-soft);
-    padding: 3px 9px;
+    background: var(--surface);
+    padding: 2px 7px;
     border-radius: 6px;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
   }
   .crumb-btn.active { background: var(--brand-soft); border-color: var(--brand); color: var(--brand-dark); }
-  .crumb-sep { color: var(--muted); font-size: 12px; }
+  .crumb-sep { color: var(--muted); font-size: 11px; }
 
   /* 3-Pane Workspace */
   .workspace {
     display: grid;
-    grid-template-columns: 260px 1fr 420px;
-    gap: 12px;
+    grid-template-columns: 195px 1fr 350px;
+    gap: 8px;
     align-items: start;
   }
-  .workspace.no-inspector { grid-template-columns: 260px 1fr; }
-  .workspace.no-sidebar { grid-template-columns: 1fr 420px; }
+  .workspace.no-inspector { grid-template-columns: 195px 1fr; }
+  .workspace.no-sidebar { grid-template-columns: 1fr 350px; }
   .workspace.no-sidebar.no-inspector { grid-template-columns: 1fr; }
 
   .pane {
     background: var(--surface);
     border: 1px solid var(--border);
-    border-radius: 14px;
+    border-radius: 10px;
     box-shadow: var(--shadow);
     overflow: hidden;
   }
 
   /* Sidebar */
-  .sidebar { position: sticky; top: 12px; max-height: calc(100vh - 24px); display: flex; flex-direction: column; }
+  .sidebar { position: sticky; top: 8px; max-height: calc(100vh - 16px); display: flex; flex-direction: column; }
   .side-tabs {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -314,20 +319,20 @@
   .side-tab {
     border: none;
     border-radius: 0;
-    padding: 9px 4px;
-    font-size: 12px;
+    padding: 7px 4px;
+    font-size: 11.5px;
     font-weight: 700;
     color: var(--muted);
     background: transparent;
     border-bottom: 2px solid transparent;
   }
   .side-tab.active { color: var(--brand-dark); background: var(--surface); border-bottom-color: var(--brand); }
-  .side-body { padding: 10px 12px; overflow-y: auto; max-height: calc(100vh - 76px); }
+  .side-body { padding: 8px 10px; overflow-y: auto; max-height: calc(100vh - 60px); }
   .side-section-title {
-    font-size: 11.5px;
+    font-size: 11px;
     font-weight: 700;
     color: var(--muted);
-    margin: 10px 0 6px;
+    margin: 8px 0 4px;
     text-transform: uppercase;
     letter-spacing: 0.03em;
     display: flex;
@@ -340,22 +345,22 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    gap: 6px;
-    padding: 5px 8px;
-    margin-bottom: 3px;
+    gap: 5px;
+    padding: 4px 7px;
+    margin-bottom: 2px;
     border: 1px solid transparent;
-    border-radius: 7px;
+    border-radius: 6px;
     background: transparent;
     text-align: left;
-    font-size: 12.5px;
+    font-size: 12px;
   }
   .facet-item:hover { background: var(--surface-hover); border-color: var(--border); color: var(--text); }
   .facet-item.active { background: var(--surface-active); border-color: var(--brand); color: var(--brand-dark); font-weight: 700; }
   .facet-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .facet-cnt {
     flex-shrink: 0;
-    font-size: 11px;
-    padding: 1px 6px;
+    font-size: 10.5px;
+    padding: 1px 5px;
     border-radius: 999px;
     background: var(--surface-soft);
     color: var(--muted);
@@ -365,14 +370,14 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
   }
   .side-saved-row .facet-item { margin-bottom: 0; flex: 1; min-width: 0; }
 
   /* Center Main Results */
   .results-pane { min-width: 0; }
   .results-header {
-    padding: 10px 14px;
+    padding: 6px 10px;
     border-bottom: 1px solid var(--border);
     background: var(--surface-soft);
     display: flex;
@@ -381,26 +386,37 @@
     gap: 8px;
     flex-wrap: wrap;
   }
-  #status { font-weight: 700; font-size: 13.5px; }
+  .results-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .results-hint { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+  #status { font-weight: 700; font-size: 12.5px; }
   .table-wrap { width: 100%; overflow-x: auto; }
   table.result-table {
     width: 100%;
+    min-width: 600px;
+    table-layout: fixed;
     border-collapse: collapse;
-    font-size: 13px;
+    font-size: 12.5px;
   }
   table.result-table th {
     text-align: left;
-    padding: 8px 10px;
+    padding: 5px 6px;
     background: #f3f7f8;
     border-bottom: 1px solid var(--border);
-    font-size: 12px;
+    font-size: 11.5px;
     color: var(--muted);
     white-space: nowrap;
   }
   table.result-table td {
-    padding: 8px 10px;
+    padding: 4px 6px;
     border-bottom: 1px solid #edf2f5;
     vertical-align: middle;
+    overflow: hidden;
   }
   table.result-table tbody tr { cursor: pointer; }
   table.result-table tbody tr:hover { background: var(--surface-hover); }
@@ -409,8 +425,8 @@
   .star-btn {
     border: none;
     background: transparent;
-    font-size: 16px;
-    padding: 2px 4px;
+    font-size: 14px;
+    padding: 1px 2px;
     color: #9aaeb8;
     line-height: 1;
   }
@@ -419,9 +435,9 @@
   .badge {
     display: inline-flex;
     align-items: center;
-    padding: 2px 7px;
+    padding: 2px 6px;
     border-radius: 5px;
-    font-size: 11px;
+    font-size: 10.5px;
     font-weight: 700;
     background: #edf2f5;
     color: #364c58;
@@ -451,28 +467,55 @@
     margin-top: 2px;
     word-break: break-word;
   }
+  .result-table .row-title {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 13px;
+    line-height: 1.3;
+    word-break: normal;
+    min-width: 0;
+  }
+  .result-table .row-title-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .result-table .row-title .badge { flex-shrink: 0; }
+  .result-table .row-sub {
+    font-size: 11px;
+    line-height: 1.25;
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    word-break: normal;
+  }
   .crumb-link {
+    display: inline;
     border: none;
     background: transparent;
     padding: 0;
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--muted);
     text-decoration: underline;
     text-decoration-color: transparent;
   }
   .crumb-link:hover { color: var(--brand); text-decoration-color: var(--brand); }
 
-  .mini-actions { display: flex; gap: 4px; white-space: nowrap; }
-  .btn-mini { padding: 4px 7px; font-size: 11.5px; border-radius: 6px; font-weight: 600; }
+  .mini-actions { display: flex; gap: 3px; white-space: nowrap; }
+  .btn-mini { padding: 3px 6px; font-size: 11px; border-radius: 5px; font-weight: 600; }
   .btn-mini.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
   .btn-mini.primary:hover { background: var(--brand-dark); color: #fff; }
 
   /* Card View */
-  .cards-wrap { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .cards-wrap { padding: 10px; display: flex; flex-direction: column; gap: 8px; }
   .result-card {
     border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 14px 16px;
+    border-radius: 10px;
+    padding: 12px 14px;
     background: var(--surface);
     cursor: pointer;
   }
@@ -480,7 +523,7 @@
   .result-card.selected { border-color: var(--brand); background: #f3faf9; box-shadow: 0 0 0 2px rgba(20, 101, 94, 0.14); }
   .card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
   .card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; }
-  .card-title { margin: 0 0 4px; font-size: 16px; color: #0e3d39; overflow-wrap: anywhere; }
+  .card-title { margin: 0 0 4px; font-size: 15.5px; color: #0e3d39; overflow-wrap: anywhere; }
   .snippet-pre {
     margin: 6px 0 0;
     padding: 8px 10px;
@@ -494,19 +537,19 @@
     overflow: auto;
   }
 
-  .load-more-wrap { padding: 14px; text-align: center; border-top: 1px solid var(--border); }
+  .load-more-wrap { padding: 10px; text-align: center; border-top: 1px solid var(--border); }
 
   /* Right Inspector Pane */
   .inspector {
     position: sticky;
-    top: 12px;
-    max-height: calc(100vh - 24px);
+    top: 8px;
+    max-height: calc(100vh - 16px);
     display: flex;
     flex-direction: column;
   }
   .inspector.hidden { display: none; }
   .inspector-head {
-    padding: 12px 14px;
+    padding: 8px 12px;
     border-bottom: 1px solid var(--border);
     background: var(--surface-soft);
     display: flex;
@@ -514,16 +557,16 @@
     align-items: center;
     gap: 8px;
   }
-  .inspector-body { padding: 14px; overflow-y: auto; max-height: calc(100vh - 76px); }
-  .insp-title { margin: 6px 0; font-size: 16.5px; line-height: 1.35; overflow-wrap: anywhere; color: #0e3d39; }
-  .insp-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+  .inspector-body { padding: 10px 12px; overflow-y: auto; max-height: calc(100vh - 60px); }
+  .insp-title { margin: 6px 0; font-size: 15.5px; line-height: 1.35; overflow-wrap: anywhere; color: #0e3d39; }
+  .insp-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 10px; }
   .btn-action {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 6px 11px;
-    border-radius: 8px;
-    font-size: 12.5px;
+    padding: 5px 10px;
+    border-radius: 7px;
+    font-size: 12px;
     font-weight: 600;
     text-decoration: none;
     border: 1px solid var(--border-strong);
@@ -535,11 +578,11 @@
   .btn-action.primary:hover { background: var(--brand-dark); color: #fff; }
 
   .insp-section {
-    margin-top: 12px;
-    padding-top: 12px;
+    margin-top: 10px;
+    padding-top: 10px;
     border-top: 1px solid #ebf0f3;
   }
-  .insp-section h4 { margin: 0 0 6px; font-size: 13px; color: var(--brand-dark); }
+  .insp-section h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--brand-dark); }
   .excel-scroll { overflow: auto; max-height: 360px; border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; }
   .excel-table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
   .excel-table td, .excel-table th { border: 1px solid #d5dfe4; padding: 5px 7px; min-width: 72px; max-width: 260px; white-space: pre-wrap; vertical-align: top; }
@@ -571,14 +614,14 @@
   .toast.show { opacity: 1; transform: translateY(0); }
 
   @media (max-width: 1200px) {
-    .workspace { grid-template-columns: 230px 1fr; }
+    .workspace { grid-template-columns: 195px 1fr; }
     .workspace.no-sidebar { grid-template-columns: 1fr; }
     .inspector:not(.hidden) {
       position: fixed;
       right: 12px;
       bottom: 12px;
       top: 12px;
-      width: min(440px, calc(100vw - 24px));
+      width: min(400px, calc(100vw - 24px));
       max-height: none;
       z-index: 150;
       box-shadow: 0 10px 36px rgba(0, 0, 0, 0.25);
@@ -619,10 +662,39 @@
           <button type="button" id="clear-q" aria-label="검색어 지우기" title="지우기 (Esc)">×</button>
         </div>
         <button type="submit" class="btn-primary">검색</button>
+        <div class="select-controls">
+          <select id="category" aria-label="자료 유형">
+            <option value="">전체 유형</option>
+            <option value="메일자료">✉️ 메일자료</option>
+            <option>자재부품</option>
+            <option>수리교체</option>
+            <option>보고서</option>
+            <option>기타</option>
+          </select>
+          <select id="ext" aria-label="파일 형식">
+            <option value="">전체 형식</option>
+            <option value="mail">✉️ 메일 자료 (.mail)</option>
+            <option value="excel">엑셀 (.xlsx/.xls)</option>
+            <option value="pdf">PDF (.pdf)</option>
+            <option value="cad">도면 (.dwg/.dxf)</option>
+            <option value="doc">문서 (Word/HWP/TXT)</option>
+            <option value="image">사진 (.jpg/.png)</option>
+            <option value="archive">압축 (.zip/.alz)</option>
+          </select>
+          <select id="sort" aria-label="정렬">
+            <option value="score">정확도 순</option>
+            <option value="mtime_desc">최신 수정일 순</option>
+            <option value="name_asc">파일명 순</option>
+          </select>
+          <div class="view-toggle" role="group" aria-label="보기 방식">
+            <button type="button" id="view-table-btn" class="active" title="단축키 v">표 보기</button>
+            <button type="button" id="view-card-btn" title="단축키 v">카드 보기</button>
+          </div>
+        </div>
       </div>
     </form>
 
-    <div class="toolbar-row">
+    <div class="sub-toolbar-row">
       <div class="quick-ops">
         <button type="button" class="op-chip" id="chip-mail-only" title="과거 Outlook 보관 메일만 보기">✉️ 메일 자료만</button>
         <button type="button" class="op-chip" id="chip-no-copy" title="검색어에 -복사본 토글">-복사본 제외</button>
@@ -630,38 +702,8 @@
         <button type="button" class="op-chip" id="chip-insert-or" title="OR 조건(|) 추가">OR(|) 추가</button>
         <button type="button" class="op-chip" id="chip-insert-quote" title="정확한 구문 따옴표 감싸기">구문(" ")</button>
       </div>
-      <div class="select-controls">
-        <select id="category" aria-label="자료 유형">
-          <option value="">전체 유형</option>
-          <option value="메일자료">✉️ 메일자료</option>
-          <option>자재부품</option>
-          <option>수리교체</option>
-          <option>보고서</option>
-          <option>기타</option>
-        </select>
-        <select id="ext" aria-label="파일 형식">
-          <option value="">전체 형식</option>
-          <option value="mail">✉️ 메일 자료 (.mail)</option>
-          <option value="excel">엑셀 (.xlsx/.xls)</option>
-          <option value="pdf">PDF (.pdf)</option>
-          <option value="cad">도면 (.dwg/.dxf)</option>
-          <option value="doc">문서 (Word/HWP/TXT)</option>
-          <option value="image">사진 (.jpg/.png)</option>
-          <option value="archive">압축 (.zip/.alz)</option>
-        </select>
-        <select id="sort" aria-label="정렬">
-          <option value="score">정확도 순</option>
-          <option value="mtime_desc">최신 수정일 순</option>
-          <option value="name_asc">파일명 순</option>
-        </select>
-        <div class="view-toggle" role="group" aria-label="보기 방식">
-          <button type="button" id="view-table-btn" class="active" title="단축키 v">표 보기</button>
-          <button type="button" id="view-card-btn" title="단축키 v">카드 보기</button>
-        </div>
-      </div>
+      <div class="chips-bar" id="recent-row" style="display:none"></div>
     </div>
-
-    <div class="chips-bar" id="recent-row" style="display:none"></div>
 
     <div class="help-drawer" id="help-drawer">
       <div class="help-grid">
@@ -672,14 +714,9 @@
         <div><span class="help-code">ext:pdf,xlsx</span> : 특정 확장자만 빠르게 제한</div>
         <div><strong>단축키</strong>: <span class="help-code">/</span> 검색창 · <span class="help-code">↑↓</span> 선택 · <span class="help-code">Enter</span> 열기 · <span class="help-code">v</span> 뷰 전환</div>
       </div>
-      <div id="health-detail" style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border);color:var(--muted);"></div>
+      <div id="health-detail" style="margin-top:8px;padding-top:6px;border-top:1px solid var(--border);color:var(--muted);"></div>
     </div>
   </header>
-
-  <div class="breadcrumb-bar" id="breadcrumb-bar">
-    <div class="crumb-list" id="crumb-list"></div>
-    <button type="button" id="reset-filters-btn" class="btn-soft" style="display:none">필터 전체 해제</button>
-  </div>
 
   <div class="workspace no-inspector" id="workspace">
     <aside class="pane sidebar" id="sidebar">
@@ -693,8 +730,14 @@
 
     <main class="pane results-pane">
       <div class="results-header">
-        <div id="status" role="status">검색어를 입력하거나 왼쪽 업무 폴더를 선택해 주세요.</div>
-        <span style="font-size:12px;color:var(--muted);">클릭=미리보기 · 더블클릭=바로 열기</span>
+        <div class="results-header-left">
+          <div id="status" role="status">검색어를 입력하거나 왼쪽 업무 폴더를 선택해 주세요.</div>
+          <div class="crumb-inline" id="breadcrumb-bar" style="display:none">
+            <div class="crumb-list" id="crumb-list"></div>
+            <button type="button" id="reset-filters-btn" class="btn-soft" style="display:none">필터 전체 해제</button>
+          </div>
+        </div>
+        <span class="results-hint">클릭=미리보기 · 더블클릭=바로 열기</span>
       </div>
       <div id="results-container">
         <div class="empty-box">
@@ -737,6 +780,7 @@ const inspector = document.querySelector('#inspector');
 const inspectorBody = document.querySelector('#inspector-body');
 const closeInspBtn = document.querySelector('#close-insp-btn');
 const toggleSidebarBtn = document.querySelector('#toggle-sidebar-btn');
+const breadcrumbBar = document.querySelector('#breadcrumb-bar');
 const crumbList = document.querySelector('#crumb-list');
 const resetFiltersBtn = document.querySelector('#reset-filters-btn');
 const loadMoreWrap = document.querySelector('#load-more-wrap');
@@ -880,10 +924,9 @@ function renderRecentQueries() {
   recentRow.append(node('span', '최근:', 'chip-label'));
   for (const item of list) {
     const wrap = node('span', '', 'chip');
-    const go = document.createElement('button');
+    const go = node('button', item, 'chip-go');
     go.type = 'button';
-    go.textContent = item;
-    go.style.cssText = 'border:none;background:transparent;padding:0;font:inherit;';
+    go.title = item;
     go.onclick = () => { q.value = item; syncInputs(); runSearch(0); };
     const del = node('button', '×', 'chip-del');
     del.type = 'button';
@@ -987,6 +1030,11 @@ function setExtFilter(extVal) {
 
 function renderBreadcrumbs() {
   crumbList.replaceChildren();
+  const anyFilter = Boolean(state.folder || catEl.value || extEl.value || state.scope === 'body');
+  if (breadcrumbBar) breadcrumbBar.style.display = anyFilter ? 'flex' : 'none';
+  resetFiltersBtn.style.display = anyFilter ? 'inline-block' : 'none';
+  if (!anyFilter) return;
+
   const rootBtn = node('button', '전체 HPNT_업무', 'crumb-btn' + (!state.folder ? ' active' : ''));
   rootBtn.type = 'button';
   rootBtn.onclick = () => { if (state.folder) setFolderFilter(''); };
@@ -1025,9 +1073,6 @@ function renderBreadcrumbs() {
     b.onclick = () => { state.scope = 'all'; syncInputs(); runSearch(0); };
     crumbList.append(b);
   }
-
-  const anyFilter = Boolean(state.folder || catEl.value || extEl.value || state.scope === 'body');
-  resetFiltersBtn.style.display = anyFilter ? 'inline-block' : 'none';
 }
 
 function renderPathSegments(container, fullPath, terms) {
@@ -1487,9 +1532,21 @@ function renderResultsOnly() {
     const wrap = node('div', '', 'table-wrap');
     const tbl = document.createElement('table');
     tbl.className = 'result-table';
+    const colgroup = document.createElement('colgroup');
+    ['28px', '54px', '', '145px', '64px', '76px', '82px'].forEach(w => {
+      const col = document.createElement('col');
+      if (w) col.style.width = w;
+      colgroup.append(col);
+    });
+    tbl.append(colgroup);
+
     const thead = document.createElement('thead');
     const hr = document.createElement('tr');
-    ['', '형식', '파일명 · 경로 (클릭=미리보기, 더블클릭=원본)', '검색 근거 / 요약', '크기', '수정일', '실행'].forEach(col => hr.append(node('th', col)));
+    ['', '형식', '파일명 · 경로', '검색 근거', '크기', '수정일', '실행'].forEach((col, i) => {
+      const th = node('th', col);
+      if (i === 0 || i === 1) { th.style.textAlign = 'center'; th.style.paddingLeft = '2px'; th.style.paddingRight = '2px'; }
+      hr.append(th);
+    });
     thead.append(hr);
     tbl.append(thead);
 
@@ -1501,6 +1558,7 @@ function renderResultsOnly() {
 
       // Star
       const tdStar = document.createElement('td');
+      tdStar.style.cssText = 'text-align:center;padding-left:2px;padding-right:2px;';
       const star = node('button', isFav(h.id) ? '★' : '☆', 'star-btn' + (isFav(h.id) ? ' starred' : ''));
       star.type = 'button';
       star.title = '즐겨찾기';
@@ -1509,53 +1567,64 @@ function renderResultsOnly() {
 
       // Ext
       const tdExt = document.createElement('td');
+      tdExt.style.cssText = 'text-align:center;padding-left:2px;padding-right:2px;';
       const em = extMeta(h.extension);
-      tdExt.append(node('span', em.label, 'badge badge-ext ' + em.cls));
+      const extBadge = node('span', em.label, 'badge badge-ext ' + em.cls);
+      extBadge.style.padding = '2px 5px';
+      tdExt.append(extBadge);
 
       // Name + Breadcrumb Path
       const tdName = document.createElement('td');
+      const rawTitle = h.related ? h.related.title : h.path.split('/').pop();
       const titleDiv = node('div', '', 'row-title');
-      appendHighlighted(titleDiv, h.related ? h.related.title : h.path.split('/').pop(), terms);
+      const titleText = node('span', '', 'row-title-text');
+      titleText.title = rawTitle;
+      appendHighlighted(titleText, rawTitle, terms);
+      titleDiv.append(titleText);
       if (h.kind === 'mail') {
-        const mTag = node('span', '✉️ 메일자료', 'badge badge-mail');
-        mTag.style.marginLeft = '6px';
-        titleDiv.append(mTag);
+        titleDiv.append(node('span', '✉️ 메일', 'badge badge-mail'));
         if (h.attachments && h.attachments.length) {
-          const aTag = node('span', `📎 ${h.attachments.length}`, 'badge');
-          aTag.style.marginLeft = '4px';
-          titleDiv.append(aTag);
+          titleDiv.append(node('span', `📎${h.attachments.length}`, 'badge'));
         }
+      } else if (h.related) {
+        titleDiv.append(node('span', `묶음 ${h.related.originals.length}`, 'badge badge-partial'));
       }
       const pathDiv = node('div', '', 'row-sub');
-      renderPathSegments(pathDiv, h.path, terms);
       if (h.kind === 'mail' && h.sender) {
-        const senderDiv = node('div', '', 'row-sub');
-        appendHighlighted(senderDiv, '발신: ' + h.sender, terms);
-        tdName.append(titleDiv, senderDiv, pathDiv);
+        const senderSpan = document.createElement('span');
+        appendHighlighted(senderSpan, `발신: ${h.sender} · `, terms);
+        pathDiv.append(senderSpan);
+        pathDiv.title = `발신: ${h.sender} · ${h.path}`;
       } else {
-        if (h.related) {
-          const relTag = node('span', ` · 묶음 ${h.related.originals.length}개`, 'badge badge-partial');
-          relTag.style.marginLeft = '6px';
-          titleDiv.append(relTag);
-        }
-        tdName.append(titleDiv, pathDiv);
+        pathDiv.title = h.path;
       }
+      renderPathSegments(pathDiv, h.path, terms);
+      tdName.append(titleDiv, pathDiv);
 
       // Snippet summary
       const tdEv = document.createElement('td');
-      const evLabel = node('div', h.evidence_label || h.location || '', 'row-sub');
+      const isFilenameOnly = h.snippet === '검색어가 파일명 또는 경로에 있습니다.';
+      const evText = isFilenameOnly ? '파일명·경로' : (h.evidence_label || h.location || '');
+      const evLabel = node('div', evText, 'row-sub');
       evLabel.style.fontWeight = '600';
-      evLabel.style.color = h.status === 'partial' || h.status === 'ready' ? 'var(--brand-dark)' : 'var(--muted)';
-      const snip = node('div', '', 'row-sub');
-      const shortSnip = (h.snippet || '').replace(/\s+/g, ' ').slice(0, 90);
-      appendHighlighted(snip, shortSnip, terms);
-      tdEv.append(evLabel, snip);
+      evLabel.style.color = (!isFilenameOnly && (h.status === 'partial' || h.status === 'ready')) ? 'var(--brand-dark)' : 'var(--muted)';
+      evLabel.title = evText;
+      tdEv.append(evLabel);
+      if (!isFilenameOnly && h.snippet && h.method !== 'browse') {
+        const shortSnip = h.snippet.replace(/\s+/g, ' ').trim();
+        if (shortSnip) {
+          const snip = node('div', '', 'row-sub');
+          snip.title = shortSnip.slice(0, 260);
+          appendHighlighted(snip, shortSnip.slice(0, 120), terms);
+          tdEv.append(snip);
+        }
+      }
 
       // Size & Date
       const tdSize = node('td', formatSize(h.size));
-      tdSize.style.whiteSpace = 'nowrap';
+      tdSize.style.cssText = 'white-space:nowrap;font-size:11.5px;color:var(--muted);';
       const tdDate = node('td', formatDate(h.mtime));
-      tdDate.style.whiteSpace = 'nowrap';
+      tdDate.style.cssText = 'white-space:nowrap;font-size:11.5px;color:var(--muted);';
 
       // Quick Actions
       const tdAct = document.createElement('td');
