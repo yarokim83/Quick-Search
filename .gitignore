@@ -1,0 +1,23 @@
+# HPNT 업무 민감 데이터 및 로컬 DB (외부 저장소 업로드 엄금)
+app/verified_notes.json
+app/related_documents.json
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+windows_config.json
+*파일인벤토리*.json
+
+# 임베디드 Python 런타임 및 로컬 백업 폴더
+runtime/
+backups/
+app_update_backups/
+app_backup_*/
+
+# Python / OS / Office 임시 파일
+__pycache__/
+*.py[cod]
+*.log
+~$*
+desktop.ini
+thumbs.db
