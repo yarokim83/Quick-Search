@@ -27,6 +27,8 @@ def choose_root():
   ole.CoUninitialize()
   if chosen:return Path(chosen)
  except Exception:pass
+ if sys.stdin is None:
+  message('HPNT_업무 폴더 선택이 취소되었습니다.');raise SystemExit(1)
  print('폴더 선택을 취소했거나 창을 열 수 없습니다. 전체 경로를 입력하거나 Enter로 종료하세요.',flush=True)
  raw=input('HPNT_업무 폴더 경로: ').strip().strip('"')
  if not raw:raise SystemExit('폴더 선택이 취소되었습니다.')
@@ -34,6 +36,14 @@ def choose_root():
 
 try:
  DATA.mkdir(parents=True,exist_ok=True)
+ log_path=DATA/'server.log'
+ if log_path.exists() and log_path.stat().st_size>2_000_000:
+  try:log_path.unlink()
+  except OSError:pass
+ if sys.stdout is None or sys.stderr is None:
+  log_file=open(log_path,'a',encoding='utf-8',buffering=1)
+  if sys.stdout is None:sys.stdout=log_file
+  if sys.stderr is None:sys.stderr=log_file
  config=json.loads(CONFIG.read_text(encoding='utf-8')) if CONFIG.exists() else {}
  root=Path(config['root']) if config.get('root') else choose_root()
  if not root.is_dir() or unicodedata.normalize('NFC',root.name)!='HPNT_업무':

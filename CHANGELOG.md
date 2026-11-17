@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.3] - 2026-11-17
+### Changed
+- `scripts/launcher.cs`, `scripts/standalone_sfx.cs`, `scripts/build_windows_dist.py`: Windows GUI 서브시스템(`/target:winexe`) 및 `runtime\pythonw.exe` 전환으로 검은 터미널 창 없이 백그라운드 실행
+- **시스템 트레이 상주 지원**: 우측 하단 Windows 트레이 아이콘 더블클릭(검색 화면 열기) 및 우클릭 메뉴(`검색 화면 열기`, `지금 목록 갱신`, `검색 서버 종료`) 추가
+- `app/start.py`, `app/server.py`: 무콘솔 환경 로그(`server.log`), 엑셀 미리보기 `CREATE_NO_WINDOW`, `ShellExecuteW(..., SW_SHOWNORMAL)` 전면 창 열기 보강
+
 ## [1.4.2] - 2026-11-17
 ### Added
 - `scripts/launcher.cs`, `HPNT_Search.exe`: 네이티브 Windows 64비트 `.exe` 런처 추가 (중복 실행 시 브라우저만 새로 열기 지원, 아이콘 내장)

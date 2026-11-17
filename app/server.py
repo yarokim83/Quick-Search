@@ -1,4 +1,4 @@
-import sqlite3, re, json, mimetypes, os, shutil, time, threading, subprocess, sys, zipfile
+import sqlite3, re, json, mimetypes, os, shutil, time, threading, subprocess, sys, zipfile, ctypes
 from collections import Counter
 from itertools import chain
 from pathlib import Path
@@ -777,9 +777,14 @@ class Handler(BaseHTTPRequestHandler):
             if status_code != 200 or p is None:
                 return self.send('원본 위치를 확인할 수 없습니다. Google Drive 연결과 파일 위치를 확인해 주세요.'.encode(), 'text/plain; charset=utf-8', 404)
             if route == '/api/open-local':
-                if not hasattr(os, 'startfile'):
+                if os.name == 'nt':
+                    rc = ctypes.windll.shell32.ShellExecuteW(None, 'open', str(p), None, str(p.parent), 1)
+                    if rc <= 32:
+                        raise OSError(f'ShellExecuteW failed: {rc}')
+                elif hasattr(os, 'startfile'):
+                    os.startfile(str(p))
+                else:
                     return self.send('이 기능은 Windows PC에서 사용할 수 있습니다.'.encode(), 'text/plain; charset=utf-8', 501)
-                os.startfile(str(p))
             else:
                 if os.name != 'nt':
                     return self.send('이 기능은 Windows PC에서 사용할 수 있습니다.'.encode(), 'text/plain; charset=utf-8', 501)
@@ -872,7 +877,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not 0 <= sheet < 500 or not 1 <= start <= 20001:
                     return self.send(b'Invalid request', status=400)
                 try:
-                    preview = subprocess.run([sys.executable, str(BASE / 'preview_excel.py'), str(p), str(sheet), str(start)], capture_output=True, timeout=30)
+                    kwargs = {'capture_output': True, 'timeout': 30}
+                    if os.name == 'nt':
+                        kwargs['creationflags'] = 0x08000000
+                    preview = subprocess.run([sys.executable, str(BASE / 'preview_excel.py'), str(p), str(sheet), str(start)], **kwargs)
                     if preview.returncode:
                         raise ValueError('preview failed')
                     if (p.stat().st_size, p.stat().st_mtime_ns) != (st.st_size, st.st_mtime_ns):

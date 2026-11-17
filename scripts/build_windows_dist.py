@@ -47,14 +47,14 @@ def ensure_ico():
     return ico_path
 
 
-def compile_cs(cs_file, out_exe, ico_path=None, extra_refs=()):
+def compile_cs(cs_file, out_exe, ico_path=None, extra_refs=(), target='winexe'):
     if not CSC_EXE.is_file():
         raise FileNotFoundError(f'C# compiler not found: {CSC_EXE}')
     cmd = [
         str(CSC_EXE),
         '/nologo',
         '/optimize+',
-        '/target:exe',
+        f'/target:{target}',
         '/platform:x64',
         f'/out:{out_exe}',
     ]
@@ -66,7 +66,7 @@ def compile_cs(cs_file, out_exe, ico_path=None, extra_refs=()):
     res = subprocess.run(cmd, capture_output=True, text=True)
     if res.returncode != 0:
         raise RuntimeError(f'csc failed for {cs_file.name}:\n{res.stdout}\n{res.stderr}')
-    print(f'[Compile] Built {out_exe.name}')
+    print(f'[Compile] Built {out_exe.name} ({target})')
 
 
 def add_dir_to_zip(zf, src_dir, zip_prefix):
@@ -92,11 +92,17 @@ def build_all():
 
     ico_path = ensure_ico()
 
-    # 1. Build folder launcher HPNT_Search.exe
+    # 1. Build folder tray launcher HPNT_Search.exe (winexe, no terminal window)
     launcher_exe = ROOT_DIR / 'HPNT_Search.exe'
-    compile_cs(ROOT_DIR / 'scripts' / 'launcher.cs', launcher_exe, ico_path=ico_path)
+    compile_cs(
+        ROOT_DIR / 'scripts' / 'launcher.cs',
+        launcher_exe,
+        ico_path=ico_path,
+        extra_refs=('System.Windows.Forms.dll', 'System.Drawing.dll'),
+        target='winexe',
+    )
     chk1 = subprocess.run([str(launcher_exe), '--check'], capture_output=True, text=True, check=True)
-    print(f'[Verify] {chk1.stdout.strip()}')
+    print(f'[Verify] HPNT_Search.exe --check rc={chk1.returncode} {chk1.stdout.strip()}')
 
     desktop_launcher = Path.home() / 'Desktop' / 'HPNT 업무검색.exe'
     if desktop_launcher.parent.is_dir():
@@ -138,13 +144,18 @@ def build_all():
     zip_mb = dist_zip.stat().st_size / (1024 * 1024)
     print(f'[Build] Created & verified ZIP: {dist_zip} ({added} files, {zip_mb:.2f} MB)')
 
-    # 3. Build single-file SFX standalone EXE
+    # 3. Build single-file SFX standalone EXE (winexe, no terminal window)
     sfx_stub = DIST_DIR / 'sfx_stub.exe'
     compile_cs(
         ROOT_DIR / 'scripts' / 'standalone_sfx.cs',
         sfx_stub,
         ico_path=ico_path,
-        extra_refs=('System.IO.Compression.dll', 'System.IO.Compression.FileSystem.dll'),
+        extra_refs=(
+            'System.IO.Compression.dll',
+            'System.IO.Compression.FileSystem.dll',
+            'System.Windows.Forms.dll',
+        ),
+        target='winexe',
     )
     exe_name = f'HPNT_Search_Windows_v{version}.exe'
     dist_exe = DIST_DIR / exe_name

@@ -5,6 +5,7 @@ using System.IO.Compression;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text;
+using System.Windows.Forms;
 
 class SliceStream : Stream
 {
@@ -106,9 +107,9 @@ class HpntStandaloneSfx
         }
     }
 
+    [STAThread]
     static int Main(string[] args)
     {
-        Console.OutputEncoding = Encoding.UTF8;
         string selfExe = Assembly.GetExecutingAssembly().Location;
 
         using (var fs = new FileStream(selfExe, FileMode.Open, FileAccess.Read, FileShare.Read))
@@ -116,7 +117,7 @@ class HpntStandaloneSfx
             long offset, length;
             if (!TryReadFooter(fs, out offset, out length))
             {
-                Console.Error.WriteLine("배포 패키지가 손상되었거나 페이로드가 없습니다.");
+                MessageBox.Show("배포 패키지가 손상되었거나 페이로드가 없습니다.", "HPNT 업무자료 통합 검색", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return 1;
             }
 
@@ -144,15 +145,18 @@ class HpntStandaloneSfx
                 {
                     if (IsPortListening("127.0.0.1", 8765))
                     {
-                        Console.WriteLine("기존 검색 서버가 실행 중입니다. 업데이트 반영을 위해 기존 실행 창을 닫고 다시 실행해 주세요.");
+                        MessageBox.Show(
+                            "기존 HPNT 검색 서버가 실행 중입니다.\n우측 하단 시스템 트레이 아이콘에서 '검색 서버 종료'를 선택한 뒤 다시 실행해 주세요.",
+                            "HPNT 업무자료 통합 검색",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information
+                        );
                         Process.Start(new ProcessStartInfo("http://127.0.0.1:8765/") { UseShellExecute = true });
                         return 0;
                     }
 
-                    Console.WriteLine("HPNT 업무자료 통합 검색 (v" + pkgVer + ") 설치 및 준비 중...");
                     Directory.CreateDirectory(bundleDir);
                     string fullBundleRoot = Path.GetFullPath(bundleDir) + Path.DirectorySeparatorChar;
-                    int count = 0;
                     foreach (var entry in archive.Entries)
                     {
                         if (string.IsNullOrEmpty(entry.Name)) continue;
@@ -163,9 +167,7 @@ class HpntStandaloneSfx
                         if (!targetPath.StartsWith(fullBundleRoot, StringComparison.OrdinalIgnoreCase)) continue;
                         Directory.CreateDirectory(Path.GetDirectoryName(targetPath));
                         entry.ExtractToFile(targetPath, true);
-                        count++;
                     }
-                    Console.WriteLine("준비 완료 (" + count + "개 파일).");
                 }
             }
 
@@ -191,12 +193,8 @@ class HpntStandaloneSfx
                 WorkingDirectory = bundleDir,
                 UseShellExecute = false
             };
-            using (var proc = Process.Start(psi))
-            {
-                if (proc == null) return 1;
-                proc.WaitForExit();
-                return proc.ExitCode;
-            }
+            Process.Start(psi);
+            return 0;
         }
     }
 }
