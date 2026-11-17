@@ -697,6 +697,7 @@
     <div class="sub-toolbar-row">
       <div class="quick-ops">
         <button type="button" class="op-chip" id="chip-mail-only" title="과거 Outlook 보관 메일만 보기">✉️ 메일 자료만</button>
+        <button type="button" class="op-chip" id="chip-no-mail" title="과거 Outlook 보관 메일을 제외하고 업무 파일만 보기">🚫 메일 자료 제외</button>
         <button type="button" class="op-chip" id="chip-no-copy" title="검색어에 -복사본 토글">-복사본 제외</button>
         <button type="button" class="op-chip" id="chip-body-only" title="본문 색인이 있는 문서만 보기">본문 있는 문서만</button>
         <button type="button" class="op-chip" id="chip-insert-or" title="OR 조건(|) 추가">OR(|) 추가</button>
@@ -788,6 +789,7 @@ const loadMoreBtn = document.querySelector('#load-more-btn');
 const viewTableBtn = document.querySelector('#view-table-btn');
 const viewCardBtn = document.querySelector('#view-card-btn');
 const chipMailOnly = document.querySelector('#chip-mail-only');
+const chipNoMail = document.querySelector('#chip-no-mail');
 const chipNoCopy = document.querySelector('#chip-no-copy');
 const chipBodyOnly = document.querySelector('#chip-body-only');
 const toastEl = document.querySelector('#toast');
@@ -802,6 +804,7 @@ let state = {
   scanActive: false,
   folder: '',
   scope: 'all',
+  excludeMail: false,
   viewMode: localStorage.getItem(VIEW_KEY) || 'table',
   sideTab: 'facets',
   hits: [],
@@ -1002,12 +1005,17 @@ async function postFileAction(endpoint, file, feedbackEl, pendingText, successTe
 function syncInputs() {
   clearBtn.classList.toggle('visible', q.value.length > 0);
   chipMailOnly.classList.toggle('active', extEl.value === 'mail' || catEl.value === '메일자료');
+  chipNoMail.classList.toggle('active', Boolean(state.excludeMail));
   chipNoCopy.classList.toggle('active', /(?:^|\s)-복사본(?:\s|$)/.test(q.value));
   chipBodyOnly.classList.toggle('active', state.scope === 'body');
 }
 
 function setFolderFilter(folderPath) {
   state.folder = folderPath || '';
+  if (state.folder === '메일보관' || state.folder.startsWith('메일보관/')) {
+    state.excludeMail = false;
+    syncInputs();
+  }
   runSearch(0);
 }
 
@@ -1025,12 +1033,16 @@ function setExtFilter(extVal) {
     custom.textContent = `확장자: ${extVal.toUpperCase()}`;
   }
   extEl.value = extVal || '';
+  if (extEl.value === 'mail' || extEl.value === '.mail') {
+    state.excludeMail = false;
+  }
+  syncInputs();
   runSearch(0);
 }
 
 function renderBreadcrumbs() {
   crumbList.replaceChildren();
-  const anyFilter = Boolean(state.folder || catEl.value || extEl.value || state.scope === 'body');
+  const anyFilter = Boolean(state.folder || catEl.value || extEl.value || state.scope === 'body' || state.excludeMail);
   if (breadcrumbBar) breadcrumbBar.style.display = anyFilter ? 'flex' : 'none';
   resetFiltersBtn.style.display = anyFilter ? 'inline-block' : 'none';
   if (!anyFilter) return;
@@ -1071,6 +1083,17 @@ function renderBreadcrumbs() {
     const b = node('button', '본문 색인만 ×', 'crumb-btn active');
     b.type = 'button';
     b.onclick = () => { state.scope = 'all'; syncInputs(); runSearch(0); };
+    crumbList.append(b);
+  }
+  if (state.excludeMail) {
+    const b = node('button', '메일 자료 제외 ×', 'crumb-btn active');
+    b.type = 'button';
+    b.onclick = () => {
+      state.excludeMail = false;
+      syncInputs();
+      if (q.value.trim().length >= 1 || hasAnyFilter()) runSearch(0);
+      else resetToWelcome();
+    };
     crumbList.append(b);
   }
 }
@@ -1136,7 +1159,12 @@ function renderSidebar() {
         const btn = node('button', '', 'facet-item' + (active ? ' active' : ''));
         btn.type = 'button';
         btn.append(node('span', c.name, 'facet-name'), node('span', c.count.toLocaleString(), 'facet-cnt'));
-        btn.onclick = () => { catEl.value = active ? '' : c.name; runSearch(0); };
+        btn.onclick = () => {
+          catEl.value = active ? '' : c.name;
+          if (catEl.value === '메일자료') state.excludeMail = false;
+          syncInputs();
+          runSearch(0);
+        };
         sideBody.append(btn);
       }
     } else {
@@ -1721,7 +1749,7 @@ function renderResultsOnly() {
 }
 
 function hasAnyFilter() {
-  return Boolean(state.folder || catEl.value || extEl.value || state.scope === 'body');
+  return Boolean(state.folder || catEl.value || extEl.value || state.scope === 'body' || state.excludeMail);
 }
 
 function resetToWelcome(msg = '검색어를 입력하거나 왼쪽 업무 폴더를 선택해 주세요.') {
@@ -1759,13 +1787,18 @@ async function runSearch(offset = 0, { live = false } = {}) {
 
   try {
     const start = performance.now();
+    const rawQ = q.value;
+    const apiQ = (state.excludeMail && !/(?:^|\s)-메일보관\//.test(rawQ))
+      ? (rawQ.trim() ? rawQ.trim() + ' -메일보관/' : '-메일보관/')
+      : rawQ;
     const params = new URLSearchParams({
-      q: q.value,
+      q: apiQ,
       category: catEl.value,
       scope: state.scope,
       ext: extEl.value,
       sort: sortEl.value,
       folder: state.folder,
+      exclude_mail: state.excludeMail ? '1' : '',
       offset: String(offset),
       limit: '100',
     });
@@ -1820,6 +1853,10 @@ async function runSearch(offset = 0, { live = false } = {}) {
 /* Events */
 document.querySelector('#form').onsubmit = e => { e.preventDefault(); clearTimeout(liveTimer); runSearch(0, { live: false }); };
 [catEl, extEl, sortEl].forEach(sel => sel.onchange = () => {
+  if (catEl.value === '메일자료' || extEl.value === 'mail' || extEl.value === '.mail') {
+    state.excludeMail = false;
+    syncInputs();
+  }
   if (q.value.trim().length >= 1 || hasAnyFilter()) runSearch(0, { live: false });
 });
 
@@ -1850,11 +1887,27 @@ chipMailOnly.onclick = () => {
   if (extEl.value === 'mail' || catEl.value === '메일자료') {
     if (extEl.value === 'mail') extEl.value = '';
     if (catEl.value === '메일자료') catEl.value = '';
+    syncInputs();
+    if (q.value.trim().length >= 1 || hasAnyFilter()) runSearch(0, { live: false });
+    else resetToWelcome();
   } else {
     extEl.value = 'mail';
+    state.excludeMail = false;
+    syncInputs();
+    runSearch(0, { live: false });
+  }
+};
+
+chipNoMail.onclick = () => {
+  state.excludeMail = !state.excludeMail;
+  if (state.excludeMail) {
+    if (extEl.value === 'mail' || extEl.value === '.mail') extEl.value = '';
+    if (catEl.value === '메일자료') catEl.value = '';
+    if (state.folder === '메일보관' || state.folder.startsWith('메일보관/')) state.folder = '';
   }
   syncInputs();
-  runSearch(0, { live: false });
+  if (q.value.trim().length >= 1 || hasAnyFilter()) runSearch(0, { live: false });
+  else resetToWelcome();
 };
 
 chipNoCopy.onclick = () => {
@@ -1889,6 +1942,7 @@ resetFiltersBtn.onclick = () => {
   catEl.value = '';
   extEl.value = '';
   state.scope = 'all';
+  state.excludeMail = false;
   syncInputs();
   if (q.value.trim().length >= 1) runSearch(0, { live: false });
   else resetToWelcome('필터가 초기화되었습니다. 검색어를 입력하거나 왼쪽 폴더를 선택하세요.');

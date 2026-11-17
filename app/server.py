@@ -310,8 +310,11 @@ def compute_facets(hits, active_folder=''):
     }
 
 
-def find(query='', category='', scope='all', ext_filter='', sort_by='score', folder='', offset=0, limit=DEFAULT_LIMIT):
+def find(query='', category='', scope='all', ext_filter='', sort_by='score', folder='', offset=0, limit=DEFAULT_LIMIT, exclude_mail=False):
     parsed = parse_advanced_query(query)
+    if '메일보관/' in parsed['excludes']:
+        exclude_mail = True
+        parsed['excludes'] = [ex for ex in parsed['excludes'] if ex != '메일보관/']
     positive_query = parsed['positive_query']
     record = record_query(positive_query) if positive_query and not (
         parsed['phrases'] or parsed['or_groups'] or parsed['excludes'] or parsed['path_filters'] or parsed['ext_tokens']
@@ -382,7 +385,7 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
     mail_only_ext = ext_filter in ('mail', '.mail') or parsed['ext_tokens'] == ['.mail']
 
     include_docs = not is_mail_folder and category != '메일자료' and not mail_only_ext
-    include_mails = (not folder_clean or is_mail_folder) and category in ('', '메일자료')
+    include_mails = (not exclude_mail) and (not folder_clean or is_mail_folder) and category in ('', '메일자료')
 
     c = connect()
     docs_cache, aliases_cache = get_catalog_cache(c) if include_docs else ([], [])
@@ -822,13 +825,14 @@ class Handler(BaseHTTPRequestHandler):
                 ext_filter = q.get('ext', [''])[0]
                 sort_by = q.get('sort', ['score'])[0]
                 folder = q.get('folder', [''])[0][:300]
+                exclude_mail = q.get('exclude_mail', [''])[0] in ('1', 'true', 'yes')
                 offset = max(0, int(q.get('offset', ['0'])[0]))
                 limit = min(MAX_LIMIT, max(10, int(q.get('limit', [str(DEFAULT_LIMIT)])[0])))
 
                 parsed = parse_advanced_query(query)
                 has_filter = bool(
-                    folder or category or ext_filter or scope == 'body'
-                    or parsed['path_filters'] or parsed['ext_tokens']
+                    folder or category or ext_filter or scope == 'body' or exclude_mail
+                    or parsed['excludes'] or parsed['path_filters'] or parsed['ext_tokens']
                     or parsed['phrases'] or parsed['or_groups']
                 )
                 has_term = any(len(t) >= 1 for t in clean(parsed['positive_query']).split())
@@ -842,6 +846,7 @@ class Handler(BaseHTTPRequestHandler):
                     query, category=category, scope=scope,
                     ext_filter=ext_filter, sort_by=sort_by,
                     folder=folder, offset=offset, limit=limit,
+                    exclude_mail=exclude_mail,
                 )
                 return self.send(json.dumps(result, ensure_ascii=False).encode())
 
