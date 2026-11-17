@@ -773,6 +773,8 @@ let state = {
   rawExtLabel: '',
 };
 let toastTimer = null;
+let liveTimer = null;
+let searchAbort = null;
 
 const bodyAvailability = {
   pending: '아직 본문을 색인하지 않았습니다.',
@@ -909,6 +911,7 @@ function toggleFav(file) {
 
 function recordOpened(file) {
   if (!file || !file.id) return;
+  if (q.value.trim().length >= 1) saveRecentQuery(q.value);
   const entry = { id: file.id, path: file.path, extension: file.extension, size: file.size, mtime: file.mtime, category: file.category, status: file.status, status_label: file.status_label, openedAt: Date.now() };
   const next = [entry, ...readStorageList(HIST_KEY).filter(x => x.id !== file.id)].slice(0, 20);
   writeStorageList(HIST_KEY, next);
@@ -1559,13 +1562,38 @@ function renderResultsOnly() {
   }
 }
 
+function hasAnyFilter() {
+  return Boolean(state.folder || catEl.value || extEl.value || state.scope === 'body');
+}
+
+function resetToWelcome(msg = '검색어를 입력하거나 왼쪽 업무 폴더를 선택해 주세요.') {
+  state.hits = [];
+  state.facets = null;
+  state.total = 0;
+  state.hasMore = false;
+  state.highlightTerms = [];
+  loadMoreWrap.style.display = 'none';
+  renderBreadcrumbs();
+  renderSidebar();
+  statusEl.textContent = msg;
+  const box = node('div', '', 'empty-box');
+  box.append(
+    node('p', '검색어를 한 글자만 입력해도 즉시 검색됩니다.', ''),
+    node('p', '상단 검색창에 키워드나 -제외어 / | 연산자를 입력하거나, 왼쪽 업무 폴더를 선택해 주세요.', 'row-sub')
+  );
+  resultsContainer.replaceChildren(box);
+}
+
 /* Search API */
-async function runSearch(offset = 0) {
+async function runSearch(offset = 0, { live = false } = {}) {
   const g = ++state.generation;
   const append = offset > 0;
-  if (!append) {
+  if (searchAbort) searchAbort.abort();
+  searchAbort = new AbortController();
+
+  if (!append && !live) {
     statusEl.textContent = '검색 중…';
-  } else {
+  } else if (append) {
     loadMoreBtn.disabled = true;
     loadMoreBtn.textContent = '불러오는 중…';
   }
@@ -1583,12 +1611,12 @@ async function runSearch(offset = 0) {
       offset: String(offset),
       limit: '100',
     });
-    const r = await fetch('/api/search?' + params);
+    const r = await fetch('/api/search?' + params, { signal: searchAbort.signal });
     if (!r.ok) throw Error();
     const data = await r.json();
     if (g !== state.generation) return;
 
-    const elapsed = ((performance.now() - start) / 1000).toFixed(2);
+    const elapsed = ((performance.now() - start) / 1000).toFixed(3);
     if (data.message) {
       state.hits = [];
       state.total = 0;
@@ -1604,7 +1632,7 @@ async function runSearch(offset = 0) {
       return;
     }
 
-    if (!append && q.value.trim().length >= 2) saveRecentQuery(q.value);
+    if (!live && !append && q.value.trim().length >= 1) saveRecentQuery(q.value);
 
     state.hits = append ? [...state.hits, ...data.hits] : data.hits;
     state.total = data.total;
@@ -1625,20 +1653,41 @@ async function runSearch(offset = 0) {
     if (!append) state.sideTab = 'facets';
     renderResultsOnly();
     renderSidebar();
-  } catch {
+  } catch (err) {
+    if (err && err.name === 'AbortError') return;
     if (g === state.generation) statusEl.textContent = '검색 연결을 확인해 주세요.';
   }
 }
 
 /* Events */
-document.querySelector('#form').onsubmit = e => { e.preventDefault(); runSearch(0); };
-document.querySelectorAll('.example').forEach(b => b.onclick = () => { q.value = b.textContent; syncInputs(); runSearch(0); });
+document.querySelector('#form').onsubmit = e => { e.preventDefault(); clearTimeout(liveTimer); runSearch(0, { live: false }); };
+document.querySelectorAll('.example').forEach(b => b.onclick = () => { q.value = b.textContent; syncInputs(); runSearch(0, { live: false }); });
 [catEl, extEl, sortEl].forEach(sel => sel.onchange = () => {
-  if (q.value.trim().length >= 2 || state.folder || catEl.value || extEl.value || state.scope === 'body') runSearch(0);
+  if (q.value.trim().length >= 1 || hasAnyFilter()) runSearch(0, { live: false });
 });
 
-q.oninput = syncInputs;
-clearBtn.onclick = () => { q.value = ''; syncInputs(); q.focus(); };
+function scheduleLiveSearch() {
+  syncInputs();
+  clearTimeout(liveTimer);
+  const raw = q.value.trim();
+  if (!raw && !hasAnyFilter()) {
+    if (searchAbort) searchAbort.abort();
+    resetToWelcome();
+    return;
+  }
+  if (/^[\u3131-\u318E]+$/.test(raw) && !hasAnyFilter()) return;
+  liveTimer = setTimeout(() => runSearch(0, { live: true }), 45);
+}
+
+q.addEventListener('input', scheduleLiveSearch);
+clearBtn.onclick = () => {
+  q.value = '';
+  syncInputs();
+  clearTimeout(liveTimer);
+  if (hasAnyFilter()) runSearch(0, { live: false });
+  else resetToWelcome();
+  q.focus();
+};
 
 chipNoCopy.onclick = () => {
   const cur = q.value.trim();
@@ -1648,12 +1697,12 @@ chipNoCopy.onclick = () => {
     q.value = (cur ? cur + ' ' : '') + '-복사본';
   }
   syncInputs();
-  if (q.value.trim().length >= 2 || state.folder || extEl.value || catEl.value) runSearch(0);
+  if (q.value.trim().length >= 1 || hasAnyFilter()) runSearch(0, { live: false });
 };
 chipBodyOnly.onclick = () => {
   state.scope = state.scope === 'body' ? 'all' : 'body';
   syncInputs();
-  runSearch(0);
+  runSearch(0, { live: false });
 };
 document.querySelector('#chip-insert-or').onclick = () => {
   q.value = (q.value.trimEnd() ? q.value.trimEnd() + ' | ' : '');
@@ -1673,18 +1722,8 @@ resetFiltersBtn.onclick = () => {
   extEl.value = '';
   state.scope = 'all';
   syncInputs();
-  if (q.value.trim().length >= 2) runSearch(0);
-  else {
-    state.hits = [];
-    state.facets = null;
-    state.total = 0;
-    state.hasMore = false;
-    loadMoreWrap.style.display = 'none';
-    renderBreadcrumbs();
-    renderSidebar();
-    statusEl.textContent = '검색어를 입력하거나 왼쪽 업무 폴더를 선택해 주세요.';
-    resultsContainer.replaceChildren(node('div', '필터가 초기화되었습니다. 검색어를 입력하거나 왼쪽 폴더를 선택하세요.', 'empty-box'));
-  }
+  if (q.value.trim().length >= 1) runSearch(0, { live: false });
+  else resetToWelcome('필터가 초기화되었습니다. 검색어를 입력하거나 왼쪽 폴더를 선택하세요.');
 };
 
 function setViewMode(mode) {
@@ -1735,7 +1774,7 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); q.focus(); q.select(); return;
   }
   if (e.key === 'Escape') {
-    if (document.activeElement === q && q.value) { q.value = ''; syncInputs(); }
+    if (document.activeElement === q && q.value) { clearBtn.click(); }
     else if (!inspector.classList.contains('hidden')) closeInspector();
     return;
   }

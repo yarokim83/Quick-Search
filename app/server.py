@@ -41,6 +41,8 @@ ORIGINAL_EXTENSIONS = frozenset((
 ))
 OPEN_LOCAL_EXTENSIONS = ORIGINAL_EXTENSIONS | frozenset(('.msg', '.eml', '.csv', '.md', '.json'))
 scan_lock = threading.Lock()
+_CATALOG_LOCK = threading.Lock()
+_CATALOG_CACHE = {'sig': None, 'docs': [], 'aliases': []}
 
 QC_PREFIX = r'(?<![a-z0-9])q/?c[ \t]*[-‐‑–]?[ \t]*'
 QC_NUMBER = re.compile(QC_PREFIX + r'([0-9]{3})(?![a-z0-9])(?:호기?)?')
@@ -49,6 +51,66 @@ DRAWING_NUMBER = re.compile(r'jr\d[0-9a-z]*|j\d{3}[a-z][a-z]?\d{4,}|fh\d+\.\d+\.
 DRAWING_SPACED_NUMBER = re.compile(r'(?<![a-z0-9])(j\d{3}[a-z])[ \t]*([a-z]\d{4,})(?![a-z0-9])')
 DRAWING_TITLE_NUMBER = re.compile(r'^([^\n·]+?)[ \t]+·', re.MULTILINE)
 TOKEN_SCANNER = re.compile(r'([!-]?)"([^"]+)"|(\S+)')
+JAMO_CHARS = r'\u3131-\u318E\u1100-\u11FF\uA960-\uA97F\uD7B0-\uD7FF'
+TRAILING_JAMO = re.compile(rf'([^\s{JAMO_CHARS}"])[{JAMO_CHARS}]+(?=\s|"|$)')
+ONLY_JAMO = re.compile(rf'^[{JAMO_CHARS}]+$')
+
+
+def strip_trailing_jamo(text):
+    """Strip incomplete Hangul Jamo while typing so live search never flickers to zero."""
+    return TRAILING_JAMO.sub(r'\1', text)
+
+
+def _build_cache_entry(row, matched_alias=None):
+    path_clean = clean(matched_alias or row['path'])
+    name_clean = clean(Path(row['path']).name)
+    body = row['body'] or ''
+    body_clean = clean(body) if body else ''
+    return {
+        'id': row['id'],
+        'path': row['path'],
+        'category': row['category'],
+        'status': row['status'],
+        'extension': row['extension'],
+        'size': row['size'],
+        'mtime': row['mtime'],
+        'body_clean': body_clean,
+        'path_clean': path_clean,
+        'name_clean': name_clean,
+        'text_all': f'{path_clean}\n{body_clean}' if body_clean else path_clean,
+        'matched_alias': matched_alias,
+    }
+
+
+def get_catalog_cache(c):
+    """Return normalized in-memory document list, rebuilding only when DB state changes."""
+    cnt, max_idx = c.execute('select count(*), coalesce(max(indexed_at), 0) from docs where present=1').fetchone()
+    last_scan_row = c.execute("select value from state where key='last_scan'").fetchone()
+    sig = (cnt, max_idx, last_scan_row[0] if last_scan_row else '')
+
+    with _CATALOG_LOCK:
+        if _CATALOG_CACHE['sig'] == sig:
+            return _CATALOG_CACHE['docs'], _CATALOG_CACHE['aliases']
+
+    docs = [
+        _build_cache_entry(r)
+        for r in c.execute('select id,path,category,status,extension,size,mtime,body from docs where present=1')
+    ]
+    aliases = [
+        _build_cache_entry(r, matched_alias=r['matched_alias'])
+        for r in c.execute("""
+            select d.id,d.path,d.category,d.status,d.extension,d.size,d.mtime,d.body,a.path as matched_alias
+            from photo_aliases p
+            join docs a on a.id=p.source_id and a.present=0 and a.size=p.size and a.mtime=p.source_mtime
+            join docs d on d.id=p.target_id and d.present=1 and d.size=p.size and d.mtime=p.target_mtime
+        """)
+    ]
+
+    with _CATALOG_LOCK:
+        _CATALOG_CACHE['sig'] = sig
+        _CATALOG_CACHE['docs'] = docs
+        _CATALOG_CACHE['aliases'] = aliases
+    return docs, aliases
 
 
 def search_terms(query):
@@ -76,7 +138,8 @@ def search_terms(query):
 
 def parse_advanced_query(raw_query):
     """Split search operators (-exclude, path:, ext:, "phrase", A | B) from plain search text."""
-    spaced = re.sub(r'\s*\|\s*', ' | ', raw_query.strip())
+    normalized_raw = strip_trailing_jamo(raw_query.strip())
+    spaced = re.sub(r'\s*\|\s*', ' | ', normalized_raw)
     tokens = []
     for match in TOKEN_SCANNER.finditer(spaced):
         prefix, quoted, plain = match.groups()
@@ -107,12 +170,16 @@ def parse_advanced_query(raw_query):
             if raw_items and raw_items[-1] != '|':
                 raw_items.append('|')
             continue
+        if ONLY_JAMO.fullmatch(low):
+            continue
         if (low.startswith('-') or low.startswith('!')) and len(low) > 1:
-            excludes.append(low[1:])
+            ex = low[1:]
+            if not ONLY_JAMO.fullmatch(ex):
+                excludes.append(ex)
             continue
         if low.startswith('path:') and len(low) > 5:
             p_val = low[5:].replace('\\', '/').strip('/')
-            if p_val:
+            if p_val and not ONLY_JAMO.fullmatch(p_val):
                 path_filters.append(p_val)
             continue
         if low.startswith('ext:') and len(low) > 4:
@@ -122,6 +189,9 @@ def parse_advanced_query(raw_query):
                     ext_tokens.append(ext if ext.startswith('.') else '.' + ext)
             continue
         raw_items.append(val)
+
+    while raw_items and raw_items[-1] == '|':
+        raw_items.pop()
 
     # Resolve A | B (or A OR B) groups while keeping sequential plain tokens untouched.
     or_groups = []
@@ -265,13 +335,19 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         equipment or length_patterns.get(term) or drawing_patterns.get(term) or re.compile(re.escape(term))
         for term, equipment in terms
     ]
-
-    exclude_patterns = [re.compile(re.escape(ex)) for ex in parsed['excludes']]
-    phrase_patterns = [re.compile(re.escape(ph)) for ph in parsed['phrases']]
-    or_patterns = [
-        [re.compile(re.escape(alt)) for alt in group]
-        for group in parsed['or_groups']
+    substr_terms = [
+        term for term, equipment in terms
+        if equipment is None and term not in length_patterns and term not in drawing_patterns
     ]
+    rx_terms = [
+        pattern for (term, equipment), pattern in zip(terms, patterns)
+        if equipment is not None or term in length_patterns or term in drawing_patterns
+    ]
+
+    excludes = parsed['excludes']
+    phrases = parsed['phrases']
+    or_groups = parsed['or_groups']
+    path_filters = parsed['path_filters']
 
     numeric_context = not record and len(set(terms)) > 1 and any(re.search(r'[0-9]', term) for term, _ in terms)
     context_patterns = [
@@ -287,8 +363,6 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         scope != 'body' and len(terms) > 1 and any(term == 'qc' for term, _ in terms)
     ) else []
 
-    fts_expr = fts_match_expr(terms, lengths, drawing_parts, parsed['phrases'], parsed['or_groups'])
-
     allowed_exts = list(EXT_FILTER_GROUPS.get(ext_filter) or ())
     if not allowed_exts and ext_filter.startswith('.') and len(ext_filter) >= 2:
         allowed_exts = [clean(ext_filter)]
@@ -299,49 +373,14 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                 allowed_exts = ['__impossible_ext__']
         else:
             allowed_exts = parsed['ext_tokens']
+    allowed_exts_set = frozenset(allowed_exts) if allowed_exts else None
 
     folder_clean = norm(folder).strip('/')
+    folder_prefix_slash = (folder_clean + '/') if folder_clean else ''
 
     c = connect()
-    clauses = ['d.present=1']
-    params = []
-    source = 'docs d'
-    if fts_expr:
-        source = 'search join docs d on d.id=search.rowid'
-        clauses.append('search match ?')
-        params.append(fts_expr)
-    if category:
-        clauses.append('d.category=?')
-        params.append(category)
-    if allowed_exts:
-        ph = ','.join('?' for _ in allowed_exts)
-        clauses.append(f'd.extension in ({ph})')
-        params.extend(allowed_exts)
-    if folder_clean:
-        clauses.append("(d.path=? or d.path like ? escape '\\')")
-        params.extend([folder_clean, escape_like(folder_clean) + '/%'])
-    if scope == 'body':
-        clauses.append("d.status in ('ready','partial')")
-
-    rows = c.execute(f"select d.*, null as matched_alias from {source} where {' and '.join(clauses)}", params)
-    if scope != 'body':
-        alias_clauses = ["(?='' or d.category=?)"]
-        alias_params = [category, category]
-        if allowed_exts:
-            ph = ','.join('?' for _ in allowed_exts)
-            alias_clauses.append(f'd.extension in ({ph})')
-            alias_params.extend(allowed_exts)
-        if folder_clean:
-            alias_clauses.append("(d.path=? or d.path like ? escape '\\')")
-            alias_params.extend([folder_clean, escape_like(folder_clean) + '/%'])
-        aliases = c.execute(f"""
-            select d.*, a.path as matched_alias
-            from photo_aliases p
-            join docs a on a.id=p.source_id and a.present=0 and a.size=p.size and a.mtime=p.source_mtime
-            join docs d on d.id=p.target_id and d.present=1 and d.size=p.size and d.mtime=p.target_mtime
-            where {' and '.join(alias_clauses)}
-        """, alias_params)
-        rows = chain(rows, aliases)
+    docs_cache, aliases_cache = get_catalog_cache(c)
+    rows = docs_cache if scope == 'body' else chain(docs_cache, aliases_cache)
 
     hits = []
     matched_ids = set()
@@ -349,34 +388,51 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
     drawing_chunks = {}
     split_length_rows = set()
     priority_ids = set()
+    score_substrs = substr_terms + phrases + [alt for grp in or_groups for alt in grp]
 
     for r in rows:
-        if r['id'] in matched_ids:
+        doc_id = r['id']
+        if doc_id in matched_ids:
             continue
-        body = clean(r['body'])
-        path = clean(r['matched_alias'] or r['path'])
-        if parsed['path_filters'] and not all(pf in path for pf in parsed['path_filters']):
+        if category and r['category'] != category:
             continue
-        text = body if scope == 'body' else path + '\n' + body
-        if exclude_patterns and any(ep.search(text) for ep in exclude_patterns):
+        if allowed_exts_set is not None and r['extension'] not in allowed_exts_set:
             continue
-        if not all(pattern.search(text) for pattern in patterns):
+        if folder_clean and r['path'] != folder_clean and not r['path'].startswith(folder_prefix_slash):
             continue
-        if phrase_patterns and not all(pp.search(text) for pp in phrase_patterns):
+        if scope == 'body' and r['status'] not in ('ready', 'partial'):
             continue
-        if or_patterns and not all(any(alt.search(text) for alt in group) for group in or_patterns):
+
+        path = r['path_clean']
+        if path_filters and not all(pf in path for pf in path_filters):
+            continue
+        body = r['body_clean']
+        text = body if scope == 'body' else r['text_all']
+
+        if excludes and any(ex in text for ex in excludes):
+            continue
+        if substr_terms and not all(t in text for t in substr_terms):
+            continue
+        if rx_terms and not all(rx.search(text) for rx in rx_terms):
+            continue
+        if phrases and not all(ph in text for ph in phrases):
+            continue
+        if or_groups and not all(any(alt in text for alt in grp) for grp in or_groups):
             continue
         if record and not has_date(text, record[1]):
             continue
 
-        score_patterns = patterns + phrase_patterns + [alt for grp in or_patterns for alt in grp]
-        score = sum(min(3, len(p.findall(body))) for p in score_patterns)
+        score = sum(min(3, body.count(s)) for s in score_substrs) if body else 0
+        if rx_terms and body:
+            score += sum(min(3, len(rx.findall(body))) for rx in rx_terms)
         if scope != 'body':
-            name = clean(Path(r['path']).name)
-            score += sum(8 * bool(p.search(name)) + 2 * bool(p.search(path)) for p in score_patterns)
+            name = r['name_clean']
+            score += sum(8 * (s in name) + 2 * (s in path) for s in score_substrs)
+            if rx_terms:
+                score += sum(8 * bool(rx.search(name)) + 2 * bool(rx.search(path)) for rx in rx_terms)
 
         hit = dict(
-            id=r['id'], path=r['path'], category=r['category'], status=r['status'],
+            id=doc_id, path=r['path'], category=r['category'], status=r['status'],
             status_label=LABELS[r['status']], score=score, extension=r['extension'],
             size=r['size'], mtime=r['mtime'],
         )
@@ -388,14 +444,14 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                 hit['period_label'] = period['label']
                 if period['matches']:
                     hit['score'] += 100
-                    priority_ids.add(r['id'])
+                    priority_ids.add(doc_id)
         if record:
-            chunks = c.execute('select location,text,method from chunks where doc_id=?', (r['id'],)).fetchall()
+            chunks = c.execute('select location,text,method from chunks where doc_id=?', (doc_id,)).fetchall()
             proof = record_evidence(chunks, *record)
             if proof:
                 hit.update(location=proof['location'], snippet=proof['snippet'], evidence_label=proof['label'], method='record')
                 hit['score'] += 100
-                priority_ids.add(r['id'])
+                priority_ids.add(doc_id)
             else:
                 hit['evidence_label'] = '문서 내 검색어 일치 · 같은 기록은 미확인'
         if drawing_numbers and r['extension'] == '.pdf' and r['status'] == 'partial':
@@ -403,7 +459,7 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
             best_score = (0, 0)
             for chunk in c.execute(
                 "select location,text,method from chunks where doc_id=? and method='vision-title' order by rowid",
-                (r['id'],),
+                (doc_id,),
             ):
                 chunk_text = clean(chunk['text'])
                 title_numbers = {
@@ -416,28 +472,28 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                     if sc > best_score:
                         best, best_score = chunk, sc
             if best is not None:
-                drawing_chunks[r['id']] = best
+                drawing_chunks[doc_id] = best
                 if best_score == (len(drawing_numbers), len(patterns)):
-                    priority_ids.add(r['id'])
+                    priority_ids.add(doc_id)
         if qc_title_patterns and r['extension'] == '.pdf' and r['status'] == 'partial' and re.search(r'(?<![a-z0-9])qc(?![a-z0-9])', path):
-            for chunk in c.execute("select location,text,method from chunks where doc_id=? and method='vision-title' order by rowid", (r['id'],)):
+            for chunk in c.execute("select location,text,method from chunks where doc_id=? and method='vision-title' order by rowid", (doc_id,)):
                 if all(pattern.search(clean(chunk['text'])) for pattern in qc_title_patterns):
-                    drawing_chunks[r['id']] = chunk
-                    priority_ids.add(r['id'])
+                    drawing_chunks[doc_id] = chunk
+                    priority_ids.add(doc_id)
                     break
         if not record and context_patterns and all(pattern.search(body) for pattern in context_patterns):
-            chunks = c.execute('select location,text,method from chunks where doc_id=? order by rowid', (r['id'],))
+            chunks = c.execute('select location,text,method from chunks where doc_id=? order by rowid', (doc_id,))
             for chunk in chunks:
                 chunk_text = clean(chunk['text'])
                 if all(pattern.search(chunk_text) for pattern in context_patterns):
-                    context_chunks[r['id']] = chunk
+                    context_chunks[doc_id] = chunk
                     break
-        if (length_patterns and r['id'] not in context_chunks and r['extension'] in ('.xls', '.xlsx', '.xlsm')
+        if (length_patterns and doc_id not in context_chunks and r['extension'] in ('.xls', '.xlsx', '.xlsm')
                 and all(pattern.search(body) for pattern in equipment_patterns)):
-            split_length_rows.add(r['id'])
+            split_length_rows.add(doc_id)
 
         hits.append(hit)
-        matched_ids.add(r['id'])
+        matched_ids.add(doc_id)
 
     browse_mode = not (terms or parsed['phrases'] or parsed['or_groups'])
     effective_sort = 'mtime_desc' if (browse_mode and sort_by == 'score') else sort_by
@@ -455,15 +511,17 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
     hits = group_related(c, hits)
     facets = compute_facets(hits, active_folder=folder_clean)
 
-    all_snippet_patterns = patterns + phrase_patterns + [alt for grp in or_patterns for alt in grp]
+    all_snippet_patterns = patterns + [re.compile(re.escape(ph)) for ph in phrases] + [
+        re.compile(re.escape(alt)) for grp in or_groups for alt in grp
+    ]
     page_hits = hits[offset:offset + limit]
 
     for h in page_hits:
-        h['path_confirmed'] = (ROOT / h['path']).is_file()
-        h['original_available'] = h['extension'] in ORIGINAL_EXTENSIONS and h['path_confirmed']
+        h['path_confirmed'] = True
+        h['original_available'] = h['extension'] in ORIGINAL_EXTENSIONS
         for original in h.get('related', {}).get('originals', ()):
-            original['path_confirmed'] = (ROOT / original['path']).is_file()
-            original['original_available'] = original['extension'] in ORIGINAL_EXTENSIONS and original['path_confirmed']
+            original['path_confirmed'] = True
+            original['original_available'] = original['extension'] in ORIGINAL_EXTENSIONS
         if h.get('method') == 'record':
             continue
         chunks = c.execute('select location,text,method from chunks where doc_id=?', (h['id'],)).fetchall()
@@ -510,9 +568,9 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         h.update(location=loc, snippet=snippet, method=method)
 
     highlight_terms = sorted(
-        {t for t, _ in terms if len(t) >= 2}
-        | {ph for ph in parsed['phrases'] if len(ph) >= 2}
-        | {alt for grp in parsed['or_groups'] for alt in grp if len(alt) >= 2},
+        {t for t, _ in terms if len(t) >= 1}
+        | {ph for ph in parsed['phrases'] if len(ph) >= 1}
+        | {alt for grp in parsed['or_groups'] for alt in grp if len(alt) >= 1},
         key=len,
         reverse=True,
     )
@@ -705,11 +763,11 @@ class Handler(BaseHTTPRequestHandler):
                     or parsed['path_filters'] or parsed['ext_tokens']
                     or parsed['phrases'] or parsed['or_groups']
                 )
-                has_term = any(len(t) >= 2 for t in clean(parsed['positive_query']).split())
+                has_term = any(len(t) >= 1 for t in clean(parsed['positive_query']).split())
                 if not has_term and not has_filter:
                     return self.send(json.dumps({
                         'total': 0, 'hits': [], 'facets': None,
-                        'message': '2글자 이상 검색어를 입력하거나 왼쪽 폴더·필터를 선택해 주세요.',
+                        'message': '검색어를 입력하거나 왼쪽 폴더·필터를 선택해 주세요.',
                     }, ensure_ascii=False).encode())
 
                 result = find(
@@ -827,6 +885,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send(b'Request failed', status=500)
 
 
+def warm_cache():
+    try:
+        c = connect()
+        get_catalog_cache(c)
+        c.close()
+    except Exception:
+        pass
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
@@ -834,6 +901,7 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, default=8765)
     args = parser.parse_args()
     init()
+    threading.Thread(target=warm_cache, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', args.port), Handler) as server:
         if os.environ.get('HPNT_OPEN_BROWSER') == '1':
             import webbrowser

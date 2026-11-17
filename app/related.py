@@ -1,11 +1,14 @@
 """Group files whose relationship was confirmed against the source documents."""
 
 import json
+import threading
 from pathlib import Path
 
 from catalog import BASE, ROOT
 
 MTIME_TOLERANCE_NS = 2_000_000
+_CACHE_LOCK = threading.Lock()
+_CACHE = {'sig': None, 'groups_by_path': {}}
 
 
 def mtime_matches(actual_ns, expected_ns):
@@ -13,21 +16,38 @@ def mtime_matches(actual_ns, expected_ns):
     return abs(int(actual_ns) - int(expected_ns)) <= MTIME_TOLERANCE_NS
 
 
-def group_related(connection, hits):
+def _load_groups_by_path(connection):
     config = BASE / 'related_documents.json'
     if not config.is_file():
-        return hits
+        return {}
 
-    matching_paths = {hit['path'] for hit in hits}
+    cfg_stat = config.stat()
+    doc_cnt = connection.execute('select count(*) from docs where present=1').fetchone()[0]
+    last_scan_row = connection.execute("select value from state where key='last_scan'").fetchone()
+    sig = (cfg_stat.st_mtime_ns, cfg_stat.st_size, doc_cnt, last_scan_row[0] if last_scan_row else '')
+
+    with _CACHE_LOCK:
+        if _CACHE['sig'] == sig:
+            return _CACHE['groups_by_path']
+
     groups_by_path = {}
     for group in json.loads(config.read_text(encoding='utf-8')):
-        if not any(member['path'] in matching_paths for member in group['members']):
-            continue
         originals = verified_originals(connection, group['members'])
         if originals:
             relation = {'title': group['title'], 'proof': group['proof'], 'originals': originals}
             for original in originals:
                 groups_by_path[original['path']] = relation
+
+    with _CACHE_LOCK:
+        _CACHE['sig'] = sig
+        _CACHE['groups_by_path'] = groups_by_path
+    return groups_by_path
+
+
+def group_related(connection, hits):
+    groups_by_path = _load_groups_by_path(connection)
+    if not groups_by_path:
+        return hits
 
     results = []
     displayed_groups = set()
@@ -38,7 +58,11 @@ def group_related(connection, hits):
             if group_key in displayed_groups:
                 continue
             displayed_groups.add(group_key)
-            hit['related'] = relation
+            hit['related'] = {
+                'title': relation['title'],
+                'proof': relation['proof'],
+                'originals': [dict(o) for o in relation['originals']],
+            }
         results.append(hit)
     return results
 
