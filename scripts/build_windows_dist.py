@@ -355,23 +355,23 @@ def build_all():
     chk1 = subprocess.run([str(launcher_exe), '--check'], capture_output=True, text=True, check=True)
     print(f'[Verify] HPNT_Search.exe --check rc={chk1.returncode} {chk1.stdout.strip()}')
 
-    desktop_launcher = Path.home() / 'Desktop' / 'HPNT 업무검색.exe'
-    if desktop_launcher.parent.is_dir():
-        temp_dir = Path(tempfile.gettempdir())
-        for stale in temp_dir.glob('hpnt_running_*.exe'):
-            try:
-                stale.unlink()
-            except OSError:
-                pass
+    temp_dir = Path(tempfile.gettempdir())
+    for stale in temp_dir.glob('hpnt_running_*.exe'):
         try:
-            shutil.copy2(launcher_exe, desktop_launcher)
-            print(f'[Copy] Desktop shortcut EXE: {desktop_launcher}')
+            stale.unlink()
+        except OSError:
+            pass
+
+    legacy_desktop_launcher = Path.home() / 'Desktop' / 'HPNT 업무검색.exe'
+    if legacy_desktop_launcher.is_file():
+        try:
+            legacy_desktop_launcher.unlink()
+            print(f'[Cleanup] Removed legacy Desktop launcher: {legacy_desktop_launcher}')
         except PermissionError:
             staged = temp_dir / f'hpnt_running_{int(time.time())}.exe'
-            os.replace(desktop_launcher, staged)
-            shutil.copy2(launcher_exe, desktop_launcher)
-            print(f'[Copy] Hot-swapped running Desktop EXE (old moved to {staged.name}): {desktop_launcher}')
-        refresh_shell_icons(desktop_launcher)
+            os.replace(legacy_desktop_launcher, staged)
+            print(f'[Cleanup] Moved running legacy Desktop launcher to {staged.name}')
+        refresh_shell_icons(legacy_desktop_launcher)
 
     # 2. Build standalone ZIP package
     zip_name = f'HPNT_Search_Windows_v{version}.zip'

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.7] - 2026-11-17
+### Fixed
+- **바탕화면 `HPNT 업무검색.exe` 중복 아이콘 자동 생성 제거 (`scripts/standalone_sfx.cs`, `scripts/build_windows_dist.py`)**:
+  - `HPNT_Search_Windows_v*.exe` 실행 시 바탕화면에 별도 `HPNT 업무검색.exe`(구형 캐시 작은 아이콘)를 복사·생성하던 동작을 제거
+  - 검색 서버가 이미 실행 중일 때 실행 시 경고 창 대신 잠기지 않은 최신 파일을 조용히 반영하고 브라우저(`http://127.0.0.1:8765/`)를 바로 열도록 개선
+  - 빌드 시 바탕화면에 남아 있던 기존 `HPNT 업무검색.exe`를 정리해 단일 실행 아이콘(`HPNT_Search_Windows_v*.exe`)만 유지
+
 ## [1.4.6] - 2026-11-17
 ### Changed
 - **애플 스타일 풀사이즈 스쿼클(Squircle) 아이콘 및 6종 멀티 해상도 `.ico` 적용 (`scripts/build_windows_dist.py`, `app/icon-*.png`)**:

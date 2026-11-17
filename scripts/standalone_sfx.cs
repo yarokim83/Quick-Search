@@ -141,50 +141,52 @@ class HpntStandaloneSfx
             using (var archive = new ZipArchive(slice, ZipArchiveMode.Read))
             {
                 string pkgVer = ReadZipVersion(archive);
+                bool alreadyRunning = IsPortListening("127.0.0.1", 8765);
                 if (!File.Exists(bundleExe) || currentVer != pkgVer)
                 {
-                    if (IsPortListening("127.0.0.1", 8765))
-                    {
-                        MessageBox.Show(
-                            "기존 HPNT 검색 서버가 실행 중입니다.\n우측 하단 시스템 트레이 아이콘에서 '검색 서버 종료'를 선택한 뒤 다시 실행해 주세요.",
-                            "HPNT 업무자료 통합 검색",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information
-                        );
-                        Process.Start(new ProcessStartInfo("http://127.0.0.1:8765/") { UseShellExecute = true });
-                        return 0;
-                    }
-
                     Directory.CreateDirectory(bundleDir);
                     string fullBundleRoot = Path.GetFullPath(bundleDir) + Path.DirectorySeparatorChar;
+                    ZipArchiveEntry versionEntry = null;
+                    bool allExtracted = true;
+
                     foreach (var entry in archive.Entries)
                     {
                         if (string.IsNullOrEmpty(entry.Name)) continue;
                         string rel = entry.FullName.StartsWith(Prefix, StringComparison.Ordinal)
                             ? entry.FullName.Substring(Prefix.Length)
                             : entry.FullName;
+                        if (rel == "VERSION")
+                        {
+                            versionEntry = entry;
+                            continue;
+                        }
                         string targetPath = Path.GetFullPath(Path.Combine(bundleDir, rel.Replace('/', Path.DirectorySeparatorChar)));
                         if (!targetPath.StartsWith(fullBundleRoot, StringComparison.OrdinalIgnoreCase)) continue;
                         Directory.CreateDirectory(Path.GetDirectoryName(targetPath));
-                        entry.ExtractToFile(targetPath, true);
+                        try
+                        {
+                            entry.ExtractToFile(targetPath, true);
+                        }
+                        catch
+                        {
+                            if (!alreadyRunning) throw;
+                            allExtracted = false;
+                        }
+                    }
+
+                    if (versionEntry != null && (!alreadyRunning || allExtracted))
+                    {
+                        string verTarget = Path.GetFullPath(Path.Combine(bundleDir, "VERSION"));
+                        try { versionEntry.ExtractToFile(verTarget, true); }
+                        catch { if (!alreadyRunning) throw; }
                     }
                 }
-            }
 
-            try
-            {
-                string desktopShortcutExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory), "HPNT 업무검색.exe");
-                if (File.Exists(bundleExe))
+                if (alreadyRunning)
                 {
-                    File.Copy(bundleExe, desktopShortcutExe, true);
+                    Process.Start(new ProcessStartInfo("http://127.0.0.1:8765/") { UseShellExecute = true });
+                    return 0;
                 }
-            }
-            catch { }
-
-            if (IsPortListening("127.0.0.1", 8765))
-            {
-                Process.Start(new ProcessStartInfo("http://127.0.0.1:8765/") { UseShellExecute = true });
-                return 0;
             }
 
             var psi = new ProcessStartInfo
