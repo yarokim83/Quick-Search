@@ -32,7 +32,7 @@ SYNC_APP_FILES = (
     'icon-192.png',
     'icon-512.png',
 )
-SYNC_ROOT_FILES = ('HPNT_Start.cmd', 'HPNT_Import_Notes.cmd', '사용안내.txt', 'VERSION', 'CHANGELOG.md')
+SYNC_ROOT_FILES = ('HPNT_Start.cmd', 'HPNT_Import_Notes.cmd', 'HPNT_Search.exe', '사용안내.txt', 'VERSION', 'CHANGELOG.md')
 SYNC_TARGETS = (
     Path.home() / 'Desktop' / 'HPNT_업무검색',
     Path(r'G:\내 드라이브\HPNT_업무\HPNT_검색_Windows_제목열기_업데이트\HPNT_Search_Windows_DoubleClick'),

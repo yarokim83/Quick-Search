@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.4.2] - 2026-11-17
+### Added
+- `scripts/launcher.cs`, `HPNT_Search.exe`: 네이티브 Windows 64비트 `.exe` 런처 추가 (중복 실행 시 브라우저만 새로 열기 지원, 아이콘 내장)
+- `scripts/standalone_sfx.cs`, `scripts/build_windows_dist.py`: 파일 1개만 복사해 실행하면 자동 압축 해제·설치·실행되는 단일 배포 실행 파일(`HPNT_Search_Windows_v<VERSION>.exe`) 빌드 지원
+
 ## [1.4.1] - 2026-11-17
 ### Added
 - `scripts/build_windows_dist.py`: Windows 64비트 독립 실행 배포 패키지(`HPNT_Search_Windows_v<VERSION>.zip`) 자동 빌드 및 무결성(`testzip`) 검증 스크립트 추가

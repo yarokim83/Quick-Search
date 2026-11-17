@@ -11,7 +11,7 @@ IGNORED_PREFIXES = (
     "HPNT_검색프로젝트",
 )
 IGNORED_EXACT_DIRS = frozenset(("__pycache__", "app_update_backups", "app_backup_before_ui_update", "dist", "backups", "scripts"))
-IGNORED_FILENAMES = frozenset(("desktop.ini", "thumbs.db"))
+IGNORED_FILENAMES = frozenset(("desktop.ini", "thumbs.db", "hpnt_search.exe"))
 
 
 def is_ignored_segment(name):
