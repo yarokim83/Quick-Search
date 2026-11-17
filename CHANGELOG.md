@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.4.1] - 2026-11-17
+### Added
+- `scripts/build_windows_dist.py`: Windows 64비트 독립 실행 배포 패키지(`HPNT_Search_Windows_v<VERSION>.zip`) 자동 빌드 및 무결성(`testzip`) 검증 스크립트 추가
+- `사용안내.txt`: `v1.4.1` 통합 검색·실시간 타이핑·메일 검색 기능 기준으로 최신화
+- `.gitignore`, `app/catalog.py`: `dist/`, `backups/`, `scripts/`, `*.zip` 제외 규칙 보강
+
 ## [1.4.0] - 2026-11-17
 ### Added
 - **과거 Outlook 보관 메일 통합 검색 (`app/mail_archive.py`, `app/server.py`)**:

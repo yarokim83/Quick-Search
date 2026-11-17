@@ -10,7 +10,7 @@ IGNORED_PREFIXES = (
     "HPNT_Windows_Codex",
     "HPNT_검색프로젝트",
 )
-IGNORED_EXACT_DIRS = frozenset(("__pycache__", "app_update_backups", "app_backup_before_ui_update"))
+IGNORED_EXACT_DIRS = frozenset(("__pycache__", "app_update_backups", "app_backup_before_ui_update", "dist", "backups", "scripts"))
 IGNORED_FILENAMES = frozenset(("desktop.ini", "thumbs.db"))
 
 

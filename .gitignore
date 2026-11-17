@@ -8,9 +8,11 @@ app/related_documents.json
 windows_config.json
 *파일인벤토리*.json
 
-# 임베디드 Python 런타임 및 로컬 백업 폴더
+# 임베디드 Python 런타임 및 로컬 백업/배포 폴더
 runtime/
 backups/
+dist/
+*.zip
 app_update_backups/
 app_backup_*/
 
