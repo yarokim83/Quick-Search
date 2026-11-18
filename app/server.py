@@ -9,7 +9,7 @@ APP_DIR = str(Path(__file__).resolve().parent)
 if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
-from catalog import BASE, DB, ROOT, connect, clean, grams, init, scan, seed, process, state, norm
+from catalog import BASE, DB, ROOT, connect, clean, grams, init, scan, seed, process, state, norm, category
 from evidence import has_date, record_query, record_evidence, report_period
 from related import group_related
 from mail_archive import get_mail_cache, get_mail_by_id, resolve_mail_target_path, mail_snippet
@@ -34,6 +34,7 @@ EXT_FILTER_GROUPS = {
     'doc': ('.docx', '.doc', '.hwp', '.hwpx', '.txt', '.md', '.rtf', '.pptx', '.ppt'),
     'image': ('.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.gif'),
     'archive': ('.zip', '.rar', '.alz'),
+    'folder': ('.folder',),
 }
 ORIGINAL_EXTENSIONS = frozenset((
     '.pdf', '.xlsx', '.xlsm', '.xls', '.docx', '.doc', '.hwp', '.hwpx',
@@ -41,9 +42,10 @@ ORIGINAL_EXTENSIONS = frozenset((
     '.avi', '.mp4', '.webm', '.dwg', '.dxf', '.zip', '.rar', '.alz', '.pptx', '.ppt',
 ))
 OPEN_LOCAL_EXTENSIONS = ORIGINAL_EXTENSIONS | frozenset(('.msg', '.eml', '.csv', '.md', '.json'))
+FOLDER_ID_OFFSET = 1_000_000
 scan_lock = threading.Lock()
 _CATALOG_LOCK = threading.Lock()
-_CATALOG_CACHE = {'sig': None, 'docs': [], 'aliases': []}
+_CATALOG_CACHE = {'sig': None, 'docs': [], 'aliases': [], 'folders': []}
 
 QC_PREFIX = r'(?<![a-z0-9])q/?c[ \t]*[-‐‑–]?[ \t]*'
 QC_NUMBER = re.compile(QC_PREFIX + r'([0-9]{3})(?![a-z0-9])(?:호기?)?')
@@ -83,15 +85,38 @@ def _build_cache_entry(row, matched_alias=None):
     }
 
 
+def _build_folder_entry(row):
+    path = row['path']
+    path_clean = clean(path)
+    name_clean = clean(Path(path).name)
+    return {
+        'id': -FOLDER_ID_OFFSET - row['id'],
+        'kind': 'folder',
+        'path': path,
+        'category': category(path),
+        'status': 'unsupported',
+        'extension': '.folder',
+        'size': 0,
+        'mtime': row['mtime'],
+        'body_clean': '',
+        'path_clean': path_clean,
+        'name_clean': name_clean,
+        'text_all': name_clean,
+        'matched_alias': None,
+    }
+
+
 def get_catalog_cache(c):
-    """Return normalized in-memory document list, rebuilding only when DB state changes."""
+    """Return normalized in-memory document, alias, and folder lists, rebuilding on DB change."""
     cnt, max_idx = c.execute('select count(*), coalesce(max(indexed_at), 0) from docs where present=1').fetchone()
+    has_folders_tbl = bool(c.execute("select 1 from sqlite_master where type='table' and name='folders'").fetchone())
+    folder_cnt = c.execute('select count(*) from folders where present=1').fetchone()[0] if has_folders_tbl else 0
     last_scan_row = c.execute("select value from state where key='last_scan'").fetchone()
-    sig = (cnt, max_idx, last_scan_row[0] if last_scan_row else '')
+    sig = (cnt, max_idx, folder_cnt, last_scan_row[0] if last_scan_row else '')
 
     with _CATALOG_LOCK:
         if _CATALOG_CACHE['sig'] == sig:
-            return _CATALOG_CACHE['docs'], _CATALOG_CACHE['aliases']
+            return _CATALOG_CACHE['docs'], _CATALOG_CACHE['aliases'], _CATALOG_CACHE['folders']
 
     docs = [
         _build_cache_entry(r)
@@ -106,12 +131,17 @@ def get_catalog_cache(c):
             join docs d on d.id=p.target_id and d.present=1 and d.size=p.size and d.mtime=p.target_mtime
         """)
     ]
+    folders = [
+        _build_folder_entry(r)
+        for r in c.execute('select id,path,mtime from folders where present=1')
+    ] if has_folders_tbl else []
 
     with _CATALOG_LOCK:
         _CATALOG_CACHE['sig'] = sig
         _CATALOG_CACHE['docs'] = docs
         _CATALOG_CACHE['aliases'] = aliases
-    return docs, aliases
+        _CATALOG_CACHE['folders'] = folders
+    return docs, aliases, folders
 
 
 def search_terms(query):
@@ -383,19 +413,29 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
     folder_prefix_slash = (folder_clean + '/') if folder_clean else ''
     is_mail_folder = (folder_clean == '메일보관' or folder_clean.startswith('메일보관/'))
     mail_only_ext = ext_filter in ('mail', '.mail') or parsed['ext_tokens'] == ['.mail']
+    folder_only_ext = ext_filter in ('folder', '.folder') or parsed['ext_tokens'] == ['.folder']
 
-    include_docs = not is_mail_folder and category != '메일자료' and not mail_only_ext
-    include_mails = (not exclude_mail) and (not folder_clean or is_mail_folder) and category in ('', '메일자료')
+    include_docs_global = category != '메일자료' and not mail_only_ext
+    include_mails_global = (not exclude_mail) and category in ('', '메일자료') and not folder_only_ext
+
+    include_docs = include_docs_global and not is_mail_folder
+    include_mails = include_mails_global and (not folder_clean or is_mail_folder)
+
+    need_docs = include_docs or (bool(folder_clean) and include_docs_global)
+    need_mails = include_mails or (bool(folder_clean) and include_mails_global)
+
+    has_query = bool(terms or parsed['phrases'] or parsed['or_groups'])
 
     c = connect()
-    docs_cache, aliases_cache = get_catalog_cache(c) if include_docs else ([], [])
-    mails_cache, mail_by_id = get_mail_cache() if include_mails else ([], {})
-    doc_rows = (docs_cache if scope == 'body' else chain(docs_cache, aliases_cache)) if include_docs else ()
-    mail_rows = mails_cache if include_mails else ()
+    docs_cache, aliases_cache, folders_cache = get_catalog_cache(c) if need_docs else ([], [], [])
+    mails_cache, mail_by_id = get_mail_cache() if need_mails else ([], {})
+    doc_rows = (docs_cache if scope == 'body' else chain(docs_cache, aliases_cache, folders_cache)) if need_docs else ()
+    mail_rows = mails_cache if need_mails else ()
     rows = chain(doc_rows, mail_rows)
 
     hits = []
     matched_ids = set()
+    outside_matched_ids = set()
     context_chunks = {}
     drawing_chunks = {}
     split_length_rows = set()
@@ -404,9 +444,15 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
 
     for r in rows:
         doc_id = r['id']
-        if doc_id in matched_ids:
+        if doc_id in matched_ids or doc_id in outside_matched_ids:
             continue
         is_mail = (r.get('kind') == 'mail')
+        is_folder = (r.get('kind') == 'folder')
+        if is_folder and not folder_only_ext and not has_query and not path_filters:
+            if not folder_clean or not r['path'].startswith(folder_prefix_slash):
+                continue
+            if '/' in r['path'][len(folder_prefix_slash):]:
+                continue
         if category and r['category'] != category:
             continue
         if allowed_exts_set is not None:
@@ -415,7 +461,12 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                     continue
             elif r['extension'] not in allowed_exts_set:
                 continue
-        if folder_clean and r['path'] != folder_clean and not r['path'].startswith(folder_prefix_slash):
+        in_active_folder = (
+            not folder_clean
+            or r['path'] == folder_clean
+            or r['path'].startswith(folder_prefix_slash)
+        )
+        if folder_clean and not has_query and not in_active_folder:
             continue
         if not is_mail and scope == 'body' and r['status'] not in ('ready', 'partial'):
             continue
@@ -439,6 +490,10 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         if record and not has_date(text, record[1]):
             continue
 
+        if not in_active_folder:
+            outside_matched_ids.add(doc_id)
+            continue
+
         score = sum(min(3, body.count(s)) for s in score_substrs) if body else 0
         if rx_terms and body:
             score += sum(min(3, len(rx.findall(body))) for rx in rx_terms)
@@ -459,6 +514,12 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                     {'index': i, 'name': a.get('name', ''), 'ext': Path(a.get('name', '')).suffix.lower()}
                     for i, a in enumerate(r['attachments'])
                 ],
+            )
+        elif is_folder:
+            hit = dict(
+                id=doc_id, kind='folder', path=r['path'], category=r['category'], status='unsupported',
+                status_label='업무 폴더', score=score, extension='.folder',
+                size=0, mtime=r['mtime'],
             )
         else:
             hit = dict(
@@ -555,6 +616,11 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
             snippet = mail_snippet(m_entry, all_snippet_patterns, browse_mode=browse_mode) if m_entry else ''
             h.update(location=loc, snippet=snippet, method='mail')
             continue
+        if h.get('kind') == 'folder':
+            h['path_confirmed'] = True
+            h['original_available'] = False
+            h.update(location='업무 폴더', snippet=h['path'], method='folder')
+            continue
         h['path_confirmed'] = True
         h['original_available'] = h['extension'] in ORIGINAL_EXTENSIONS
         for original in h.get('related', {}).get('originals', ()):
@@ -613,9 +679,12 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         reverse=True,
     )
 
+    outside_folder_total = len(outside_matched_ids)
     c.close()
     return {
         'total': len(hits),
+        'outside_folder_total': outside_folder_total,
+        'global_total': len(hits) + outside_folder_total,
         'offset': offset,
         'limit': limit,
         'has_more': (offset + len(page_hits)) < len(hits),
@@ -724,6 +793,17 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length))
 
     def resolve_target_path(self, doc_id, att_index=None, allowed_exts=None):
+        if doc_id <= -FOLDER_ID_OFFSET - 1:
+            folder_id = -doc_id - FOLDER_ID_OFFSET
+            c = connect()
+            r = c.execute('select realpath from folders where id=? and present=1', (folder_id,)).fetchone()
+            c.close()
+            if not r:
+                return None, 404
+            p = Path(r['realpath']).resolve()
+            if not p.is_relative_to(ROOT.resolve()) or not p.is_dir():
+                return None, 404
+            return p, 200
         if doc_id < 0:
             if att_index is not None and (type(att_index) is not int or att_index < 0):
                 return None, 400
@@ -896,6 +976,8 @@ class Handler(BaseHTTPRequestHandler):
 
             if u.path in ['/api/detail', '/original']:
                 doc_id = int(q['id'][0])
+                if doc_id <= -FOLDER_ID_OFFSET - 1:
+                    return self.send(b'Not found', status=404)
                 if doc_id < 0:
                     if u.path == '/api/detail':
                         m = get_mail_by_id(doc_id)

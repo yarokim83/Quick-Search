@@ -40,6 +40,12 @@ def connect():
  c=sqlite3.connect(DB,timeout=30);c.row_factory=sqlite3.Row;c.execute('pragma journal_mode=WAL');return c
 def cleanup_ignored_docs(c):
  """Remove previously indexed app packages and OS/Office temporary files from the catalog."""
+ if c.execute("select 1 from sqlite_master where type='table' and name='folders'").fetchone():
+  stale_fids = [r['id'] for r in c.execute('select id,path from folders') if is_ignored_relpath(r['path'])]
+  for i in range(0, len(stale_fids), 500):
+   batch = stale_fids[i:i+500]
+   ph = ','.join('?' for _ in batch)
+   c.execute(f'delete from folders where id in ({ph})', batch)
  stale_ids = [r['id'] for r in c.execute('select id,path from docs') if is_ignored_relpath(r['path'])]
  if not stale_ids:
   return 0
@@ -54,6 +60,7 @@ def cleanup_ignored_docs(c):
  return len(stale_ids)
 def init():
  c=connect();c.executescript('''CREATE TABLE IF NOT EXISTS docs(id INTEGER PRIMARY KEY,path TEXT UNIQUE,realpath TEXT,size INTEGER,mtime INTEGER,extension TEXT,category TEXT,status TEXT,body TEXT DEFAULT '',present INTEGER DEFAULT 1,flags INTEGER DEFAULT 0,error TEXT DEFAULT '',indexed_at REAL DEFAULT 0);
+ CREATE TABLE IF NOT EXISTS folders(id INTEGER PRIMARY KEY,path TEXT UNIQUE,realpath TEXT,mtime INTEGER,present INTEGER DEFAULT 1);
  CREATE VIRTUAL TABLE IF NOT EXISTS search USING fts5(grams);
  CREATE TABLE IF NOT EXISTS chunks(doc_id INTEGER,location TEXT,text TEXT,method TEXT);
  CREATE INDEX IF NOT EXISTS chunk_doc ON chunks(doc_id);
@@ -83,11 +90,28 @@ def migrate_windows_paths():
   c.execute('update docs set path=? where id=?',(new,r['id']));reindex(c,r['id'],new,r['body'])
  state(c,'path_migration_conflicts',conflicts);c.commit();c.close()
 def scan():
- c=connect();old={r['path']:dict(r) for r in c.execute('select * from docs')};seen=set();errors=[];changed=0;last_commit_changed=0
+ c=connect()
+ c.execute('CREATE TABLE IF NOT EXISTS folders(id INTEGER PRIMARY KEY,path TEXT UNIQUE,realpath TEXT,mtime INTEGER,present INTEGER DEFAULT 1)')
+ old={r['path']:dict(r) for r in c.execute('select * from docs')}
+ old_folders={r['path']:dict(r) for r in c.execute('select * from folders')}
+ seen=set();seen_folders=set();visited_dirs=set();errors=[];changed=0;last_commit_changed=0
  state(c,'scan_running','1');state(c,'scan_seen','0');state(c,'worker_error','');c.commit()
  def onerror(e):errors.append(str(e))
  for dp,ds,fs in os.walk(ROOT,followlinks=False,onerror=onerror):
   ds[:]=[d for d in ds if not is_ignored_segment(d) and not (Path(dp)/d).is_symlink()]
+  rel_dp=norm(Path(dp).relative_to(ROOT))
+  visited_dirs.add('' if rel_dp=='.' else rel_dp)
+  for d in ds:
+   sub=Path(dp)/d
+   try:
+    st_d=sub.lstat()
+    rel_d=norm(sub.relative_to(ROOT));seen_folders.add(rel_d)
+    rf=old_folders.get(rel_d);rp_d=str(sub)
+    if not rf:
+     c.execute('insert into folders(path,realpath,mtime,present) values(?,?,?,1)',(rel_d,rp_d,st_d.st_mtime_ns));changed+=1
+    elif (rf['realpath'],rf['mtime'],rf['present'])!=(rp_d,st_d.st_mtime_ns,1):
+     c.execute('update folders set realpath=?,mtime=?,present=1 where id=?',(rp_d,st_d.st_mtime_ns,rf['id']))
+   except OSError as e:errors.append(str(e))
   for fn in fs:
    if is_ignored_segment(fn):continue
    p=Path(dp)/fn
@@ -110,6 +134,12 @@ def scan():
    seen_count=len(seen)
    if (changed-last_commit_changed)>=100 or (seen_count and seen_count%500==0):
     state(c,'scan_seen',seen_count);c.commit();last_commit_changed=changed
+ if not errors:
+  for fpath,rf in old_folders.items():
+   if rf['present'] and fpath not in seen_folders:
+    parent_rel=fpath.rsplit('/',1)[0] if '/' in fpath else ''
+    if parent_rel in visited_dirs:
+     c.execute('update folders set present=0 where id=?',(rf['id'],))
  # Cloud providers can show an incomplete directory without reporting an error.
  # Keep unobserved records until their absence is independently confirmed.
  missing=sum(1 for path,r in old.items() if r['present'] and path not in seen)

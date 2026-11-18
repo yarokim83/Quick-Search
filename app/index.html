@@ -451,10 +451,35 @@
   .ext-img { background: #c05621; }
   .ext-zip { background: #718096; }
   .ext-mail { background: #1d4ed8; }
+  .ext-folder { background: #b45309; }
   .badge-ready { background: #e6f4ea; color: #137333; }
   .badge-partial { background: #e8f0fe; color: #1967d2; }
   .badge-mail { background: #dbeafe; color: #1e40af; border: 1px solid #bfdbfe; }
   .badge-warn { background: #fef3c7; color: var(--warn); }
+
+  .folder-scope-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 7px 10px;
+    background: #fffbeb;
+    border-bottom: 1px solid #fde68a;
+    color: #78350f;
+    font-size: 12px;
+  }
+  .folder-scope-banner strong { color: #92400e; }
+  .btn-banner {
+    background: #b45309;
+    border-color: #b45309;
+    color: #fff;
+    padding: 3px 10px;
+    font-size: 11.5px;
+    font-weight: 700;
+    border-radius: 6px;
+  }
+  .btn-banner:hover:not(:disabled) { background: #92400e; border-color: #92400e; color: #fff; }
 
   .row-title {
     font-weight: 700;
@@ -673,6 +698,7 @@
           </select>
           <select id="ext" aria-label="파일 형식">
             <option value="">전체 형식</option>
+            <option value="folder">📁 폴더 (.folder)</option>
             <option value="mail">✉️ 메일 자료 (.mail)</option>
             <option value="excel">엑셀 (.xlsx/.xls)</option>
             <option value="pdf">PDF (.pdf)</option>
@@ -809,6 +835,8 @@ let state = {
   sideTab: 'facets',
   hits: [],
   total: 0,
+  outsideFolderTotal: 0,
+  globalTotal: 0,
   offset: 0,
   hasMore: false,
   facets: null,
@@ -864,6 +892,7 @@ function formatDate(mtimeNs) {
 
 function extMeta(ext) {
   const e = (ext || '').toLowerCase();
+  if (e === '.folder') return { label: '📁 폴더', cls: 'ext-folder' };
   if (e === '.mail') return { label: '✉️ 메일', cls: 'ext-mail' };
   if (['.xlsx', '.xlsm', '.xls', '.csv'].includes(e)) return { label: e.slice(1).toUpperCase(), cls: 'ext-excel' };
   if (e === '.pdf') return { label: 'PDF', cls: 'ext-pdf' };
@@ -930,7 +959,7 @@ function renderRecentQueries() {
     const go = node('button', item, 'chip-go');
     go.type = 'button';
     go.title = item;
-    go.onclick = () => { q.value = item; syncInputs(); runSearch(0); };
+    go.onclick = () => { q.value = item; state.folder = ''; syncInputs(); runSearch(0); };
     const del = node('button', '×', 'chip-del');
     del.type = 'button';
     del.onclick = e => { e.stopPropagation(); removeRecentQuery(item); };
@@ -946,7 +975,7 @@ function toggleFav(file) {
   const exists = list.some(f => f.id === file.id);
   const next = exists
     ? list.filter(f => f.id !== file.id)
-    : [{ id: file.id, path: file.path, extension: file.extension, size: file.size, mtime: file.mtime, category: file.category, status: file.status, status_label: file.status_label }, ...list].slice(0, 50);
+    : [{ id: file.id, kind: file.kind, path: file.path, extension: file.extension, size: file.size, mtime: file.mtime, category: file.category, status: file.status, status_label: file.status_label }, ...list].slice(0, 50);
   writeStorageList(FAV_KEY, next);
   showToast(exists ? '즐겨찾기에서 해제했습니다.' : '즐겨찾기에 추가했습니다.');
   if (state.sideTab === 'favs') renderSidebar();
@@ -957,7 +986,7 @@ function toggleFav(file) {
 function recordOpened(file) {
   if (!file || !file.id) return;
   if (q.value.trim().length >= 1) saveRecentQuery(q.value);
-  const entry = { id: file.id, path: file.path, extension: file.extension, size: file.size, mtime: file.mtime, category: file.category, status: file.status, status_label: file.status_label, openedAt: Date.now() };
+  const entry = { id: file.id, kind: file.kind, path: file.path, extension: file.extension, size: file.size, mtime: file.mtime, category: file.category, status: file.status, status_label: file.status_label, openedAt: Date.now() };
   const next = [entry, ...readStorageList(HIST_KEY).filter(x => x.id !== file.id)].slice(0, 20);
   writeStorageList(HIST_KEY, next);
   if (state.sideTab === 'history') renderSidebar();
@@ -1397,15 +1426,32 @@ function openInspector(file) {
   const actions = node('div', '', 'insp-actions');
 
   if (file.path_confirmed !== false) {
-    const openBtn = node('button', '원본 열기 (Enter)', 'btn-action primary');
-    openBtn.type = 'button';
-    openBtn.onclick = () => postFileAction('/api/open-local', file, feedback, '원본을 여는 중…', '원본 열기를 요청했습니다.');
-    actions.append(openBtn);
+    if (file.kind === 'folder') {
+      const openBtn = node('button', '폴더 열기 (Enter)', 'btn-action primary');
+      openBtn.type = 'button';
+      openBtn.onclick = () => postFileAction('/api/open-local', file, feedback, '폴더를 여는 중…', '탐색기에서 폴더를 열었습니다.');
+      actions.append(openBtn);
 
-    const folderBtn = node('button', '폴더 열기', 'btn-action');
-    folderBtn.type = 'button';
-    folderBtn.onclick = () => postFileAction('/api/open-folder', file, feedback, '탐색기 여는 중…', '탐색기에서 파일 위치를 열었습니다.');
-    actions.append(folderBtn);
+      const browseBtn = node('button', '앱 안에서 내부 보기', 'btn-action');
+      browseBtn.type = 'button';
+      browseBtn.onclick = () => setFolderFilter(file.path);
+      actions.append(browseBtn);
+
+      const parentBtn = node('button', '상위 위치 열기', 'btn-action');
+      parentBtn.type = 'button';
+      parentBtn.onclick = () => postFileAction('/api/open-folder', file, feedback, '상위 위치 여는 중…', '탐색기에서 위치를 열었습니다.');
+      actions.append(parentBtn);
+    } else {
+      const openBtn = node('button', '원본 열기 (Enter)', 'btn-action primary');
+      openBtn.type = 'button';
+      openBtn.onclick = () => postFileAction('/api/open-local', file, feedback, '원본을 여는 중…', '원본 열기를 요청했습니다.');
+      actions.append(openBtn);
+
+      const folderBtn = node('button', '폴더 열기', 'btn-action');
+      folderBtn.type = 'button';
+      folderBtn.onclick = () => postFileAction('/api/open-folder', file, feedback, '탐색기 여는 중…', '탐색기에서 파일 위치를 열었습니다.');
+      actions.append(folderBtn);
+    }
   }
 
   const copyBtn = node('button', '경로 복사', 'btn-action');
@@ -1524,7 +1570,10 @@ function openInspector(file) {
   if (file.status === 'ready' || file.status === 'partial') {
     inspectorBody.append(buildDetailWidget(file, terms));
   } else {
-    const p = node('p', bodyAvailability[file.status] || '', 'row-sub');
+    const fallbackMsg = file.kind === 'folder'
+      ? "이 폴더의 하위 파일과 하위 폴더를 앱 안에서 보려면 '앱 안에서 내부 보기'를 누르세요."
+      : (bodyAvailability[file.status] || '');
+    const p = node('p', fallbackMsg, 'row-sub');
     p.style.marginTop = '12px';
     inspectorBody.append(p);
   }
@@ -1543,9 +1592,30 @@ function renderResultsSelection() {
   });
 }
 
+function buildFolderScopeBanner() {
+  if (!state.folder || !state.outsideFolderTotal) return null;
+  const banner = node('div', '', 'folder-scope-banner');
+  const msg = node('div');
+  const folderLabel = state.folder.split('/').pop() || state.folder;
+  msg.append(
+    document.createTextNode('📁 현재 '),
+    node('strong', `[${folderLabel}]`),
+    document.createTextNode(` 폴더 내부만 표시 중 (${state.total.toLocaleString()}개) — 다른 업무 폴더에 `),
+    node('strong', `${state.outsideFolderTotal.toLocaleString()}개`),
+    document.createTextNode(' 더 있습니다.'),
+  );
+  const btn = node('button', `전체 HPNT_업무 결과 (${state.globalTotal.toLocaleString()}개) 모두 보기`, 'btn-banner');
+  btn.type = 'button';
+  btn.onclick = () => setFolderFilter('');
+  banner.append(msg, btn);
+  return banner;
+}
+
 /* Render Results (Table / Card) */
 function renderResultsOnly() {
   resultsContainer.replaceChildren();
+  const banner = buildFolderScopeBanner();
+  if (banner) resultsContainer.append(banner);
   const hits = state.hits;
   const terms = state.highlightTerms;
 
@@ -1632,13 +1702,13 @@ function renderResultsOnly() {
       // Snippet summary
       const tdEv = document.createElement('td');
       const isFilenameOnly = h.snippet === '검색어가 파일명 또는 경로에 있습니다.';
-      const evText = isFilenameOnly ? '파일명·경로' : (h.evidence_label || h.location || '');
+      const evText = h.kind === 'folder' ? '업무 폴더' : isFilenameOnly ? '파일명·경로' : (h.evidence_label || h.location || '');
       const evLabel = node('div', evText, 'row-sub');
       evLabel.style.fontWeight = '600';
       evLabel.style.color = (!isFilenameOnly && (h.status === 'partial' || h.status === 'ready')) ? 'var(--brand-dark)' : 'var(--muted)';
       evLabel.title = evText;
       tdEv.append(evLabel);
-      if (!isFilenameOnly && h.snippet && h.method !== 'browse') {
+      if (!isFilenameOnly && h.snippet && h.method !== 'browse' && h.method !== 'folder') {
         const shortSnip = h.snippet.replace(/\s+/g, ' ').trim();
         if (shortSnip) {
           const snip = node('div', '', 'row-sub');
@@ -1649,7 +1719,7 @@ function renderResultsOnly() {
       }
 
       // Size & Date
-      const tdSize = node('td', formatSize(h.size));
+      const tdSize = node('td', h.kind === 'folder' ? '-' : formatSize(h.size));
       tdSize.style.cssText = 'white-space:nowrap;font-size:11.5px;color:var(--muted);';
       const tdDate = node('td', formatDate(h.mtime));
       tdDate.style.cssText = 'white-space:nowrap;font-size:11.5px;color:var(--muted);';
@@ -1658,13 +1728,23 @@ function renderResultsOnly() {
       const tdAct = document.createElement('td');
       const act = node('div', '', 'mini-actions');
       if (h.path_confirmed !== false) {
-        const oBtn = node('button', '열기', 'btn-mini primary');
-        oBtn.type = 'button';
-        oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.'); };
-        const fBtn = node('button', '폴더', 'btn-mini');
-        fBtn.type = 'button';
-        fBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-folder', h, null, '', '탐색기에서 위치를 열었습니다.'); };
-        act.append(oBtn, fBtn);
+        if (h.kind === 'folder') {
+          const oBtn = node('button', '열기', 'btn-mini primary');
+          oBtn.type = 'button';
+          oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '탐색기에서 폴더를 열었습니다.'); };
+          const inBtn = node('button', '탐색', 'btn-mini');
+          inBtn.type = 'button';
+          inBtn.onclick = e => { e.stopPropagation(); setFolderFilter(h.path); };
+          act.append(oBtn, inBtn);
+        } else {
+          const oBtn = node('button', '열기', 'btn-mini primary');
+          oBtn.type = 'button';
+          oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.'); };
+          const fBtn = node('button', '폴더', 'btn-mini');
+          fBtn.type = 'button';
+          fBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-folder', h, null, '', '탐색기에서 위치를 열었습니다.'); };
+          act.append(oBtn, fBtn);
+        }
       } else {
         act.append(node('span', '미확인', 'badge badge-warn'));
       }
@@ -1717,7 +1797,7 @@ function renderResultsOnly() {
       if (h.evidence_label || h.period_label) {
         card.append(node('div', [h.period_label, h.evidence_label].filter(Boolean).join(' · '), 'row-sub'));
       }
-      if (h.snippet) {
+      if (h.snippet && h.kind !== 'folder') {
         const pre = node('pre', '', 'snippet-pre');
         appendHighlighted(pre, h.snippet, terms);
         card.append(pre);
@@ -1726,13 +1806,26 @@ function renderResultsOnly() {
       const bar = node('div', '', 'mini-actions');
       bar.style.marginTop = '8px';
       if (h.path_confirmed !== false) {
-        const oBtn = node('button', '원본 열기', 'btn-mini primary');
-        oBtn.type = 'button';
-        oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.'); };
-        const fBtn = node('button', '폴더 열기', 'btn-mini');
-        fBtn.type = 'button';
-        fBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-folder', h, null, '', '탐색기에서 위치를 열었습니다.'); };
-        bar.append(oBtn, fBtn);
+        if (h.kind === 'folder') {
+          const oBtn = node('button', '폴더 열기', 'btn-mini primary');
+          oBtn.type = 'button';
+          oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '탐색기에서 폴더를 열었습니다.'); };
+          const inBtn = node('button', '내부 탐색', 'btn-mini');
+          inBtn.type = 'button';
+          inBtn.onclick = e => { e.stopPropagation(); setFolderFilter(h.path); };
+          const fBtn = node('button', '상위 폴더', 'btn-mini');
+          fBtn.type = 'button';
+          fBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-folder', h, null, '', '탐색기에서 위치를 열었습니다.'); };
+          bar.append(oBtn, inBtn, fBtn);
+        } else {
+          const oBtn = node('button', '원본 열기', 'btn-mini primary');
+          oBtn.type = 'button';
+          oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.'); };
+          const fBtn = node('button', '폴더 열기', 'btn-mini');
+          fBtn.type = 'button';
+          fBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-folder', h, null, '', '탐색기에서 위치를 열었습니다.'); };
+          bar.append(oBtn, fBtn);
+        }
       }
       const cBtn = node('button', '경로 복사', 'btn-mini');
       cBtn.type = 'button';
@@ -1756,6 +1849,8 @@ function resetToWelcome(msg = '검색어를 입력하거나 왼쪽 업무 폴더
   state.hits = [];
   state.facets = null;
   state.total = 0;
+  state.outsideFolderTotal = 0;
+  state.globalTotal = 0;
   state.hasMore = false;
   state.highlightTerms = [];
   loadMoreWrap.style.display = 'none';
@@ -1811,6 +1906,8 @@ async function runSearch(offset = 0, { live = false } = {}) {
     if (data.message) {
       state.hits = [];
       state.total = 0;
+      state.outsideFolderTotal = 0;
+      state.globalTotal = 0;
       state.facets = null;
       state.hasMore = false;
       statusEl.textContent = data.message;
@@ -1827,6 +1924,8 @@ async function runSearch(offset = 0, { live = false } = {}) {
 
     state.hits = append ? [...state.hits, ...data.hits] : data.hits;
     state.total = data.total;
+    state.outsideFolderTotal = Number(data.outside_folder_total || 0);
+    state.globalTotal = Number(data.global_total || data.total || 0);
     state.offset = offset;
     state.hasMore = Boolean(data.has_more);
     state.facets = data.facets || null;
@@ -1876,6 +1975,7 @@ function scheduleLiveSearch() {
 q.addEventListener('input', scheduleLiveSearch);
 clearBtn.onclick = () => {
   q.value = '';
+  state.folder = '';
   syncInputs();
   clearTimeout(liveTimer);
   if (hasAnyFilter()) runSearch(0, { live: false });

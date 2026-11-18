@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.8] - 2026-11-18
+### Added
+- **모든 업무 폴더(빈 폴더 포함 5,713개) 색인 및 검색 지원 (`app/catalog.py`, `app/server.py`, `app/index.html`)**:
+  - `folders` 테이블 추가 및 스캔 연동으로 `OOG Twistlock pin Set`처럼 내부 파일이 없는 빈 폴더를 포함한 모든 폴더를 검색 결과(`📁 폴더`, `ext:folder`)로 조회 가능
+  - 검색 결과 및 인스펙터에서 폴더를 바로 탐색기로 열기(`[열기]`) 또는 앱 내 하위 폴더 탐색(`[탐색]`/`[앱 안에서 내부 보기]`) 지원
+- **폴더 필터 제한 안내 배너 및 자동 해제 (`app/server.py`, `app/index.html`)**:
+  - 특정 폴더 필터(`state.folder`)가 켜진 상태에서 검색할 때 다른 폴더의 일치 개수(`outside_folder_total`, `global_total`)를 계산해 결과 최상단에 안내 배너 및 `[전체 HPNT_업무 결과 모두 보기]` 버튼 표시
+  - 검색창 지우기(`×`) 및 최근 검색어 클릭 시 기존 폴더 필터를 자동 해제해 새 검색 시 누락 착오 방지
+
 ## [1.4.7] - 2026-11-17
 ### Fixed
 - **바탕화면 `HPNT 업무검색.exe` 중복 아이콘 자동 생성 제거 (`scripts/standalone_sfx.cs`, `scripts/build_windows_dist.py`)**:
