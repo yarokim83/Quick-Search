@@ -14,6 +14,10 @@ DATE_LABELS = {
     "점검날짜": "점검일", "점검일": "점검일", "완료일": "완료일",
 }
 EQUIPMENT_LABELS = {"호기", "장비번호", "장비", "q/c", "qc"}
+REPORT_YEAR_RX = re.compile(r"(?<!\d)((?:19|20)\d{2})년")
+REPORT_MONTH_RX = re.compile(r"(?<!\d)(1[0-2]|0?[1-9])월")
+REPORT_KEYWORD_RX = re.compile(r"통계|보고")
+REPORT_DIR_YEAR_RX = re.compile(r"(?:^|/)((?:19|20)\d{2})년(?:[^/]*)(?:/|$)")
 
 
 def calendar_date(year, month, day):
@@ -88,26 +92,39 @@ def evidence(sheet, equipment_cell, date_cell, label):
     }
 
 
-def report_period(path, query):
-    year = re.search(r"(?<!\d)((?:19|20)\d{2})년", query)
-    month = re.search(r"(?<!\d)(1[0-2]|0?[1-9])월", query)
-    if not year or not month or not re.search(r"통계|보고", query):
+def parse_report_query(query):
+    if not query or "년" not in query or "월" not in query or ("통계" not in query and "보고" not in query):
+        return None
+    year = REPORT_YEAR_RX.search(query)
+    month = REPORT_MONTH_RX.search(query)
+    if not year or not month or not REPORT_KEYWORD_RX.search(query):
+        return None
+    return year[1], int(month[1])
+
+
+def report_period(path, query, parsed_period=None):
+    if parsed_period is None:
+        parsed_period = parse_report_query(query)
+        if parsed_period is None:
+            return None
+    if "통계" not in path and "보고" not in path:
         return None
     name = Path(path).stem
-    if not re.search(r"통계|보고", name):
+    if not REPORT_KEYWORD_RX.search(name):
         return None
-    months = {int(value) for value in re.findall(r"(?<!\d)(1[0-2]|0?[1-9])월", name)}
+    months = {int(value) for value in REPORT_MONTH_RX.findall(name)}
     if len(months) != 1:
         return None
     title_month = months.pop()
-    title_years = re.findall(r"(?<!\d)((?:19|20)\d{2})년", name)
-    directory_years = re.findall(r"(?:^|/)((?:19|20)\d{2})년(?:[^/]*)(?:/|$)", path)
+    title_years = REPORT_YEAR_RX.findall(name)
+    directory_years = REPORT_DIR_YEAR_RX.findall(path)
     years = set(title_years or directory_years)
     if len(years) != 1:
         return None
     title_year = years.pop()
     label = "파일명 기준" if title_years else "파일명·경로 기준"
+    target_year, target_month = parsed_period
     return {
         "label": f"{label} {title_year}년 {title_month}월",
-        "matches": title_year == year[1] and title_month == int(month[1]),
+        "matches": title_year == target_year and title_month == target_month,
     }

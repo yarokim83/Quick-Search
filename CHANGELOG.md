@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.4.9] - 2026-11-18
+### Changed
+- **백엔드 인메모리 검색 엔진 고속화 및 I/O 병목 제거 (`app/server.py`, `app/mail_archive.py`, `app/evidence.py`, `app/related.py`)**:
+  - `qc107` 등 장비번호·길이·도면번호 정규식 검색 전에 필수 부분 문자열(`required_substrs`) 사전 필터링 및 단일/다중 검색어 제너레이터 할당 제거로 `qc107` 검색 지연을 `1127.5ms` → `97.3ms`로 대폭 단축
+  - `get_mail_cache(force_check=False)`가 일반 검색 및 `/api/status` 폴링 중 Google Drive(`메일검색.html`) `.stat()` 호출 없이 메모리 및 로컬 `mails_cache.sqlite`에서 즉시 로드되도록 개선하고, 첨부파일 확장자/UI 메타(`attachments_ui`, `status_label`, `top_folder`)를 캐시 생성 시 사전 계산
+  - `_CATALOG_CACHE`(1.5초 TTL)에 `chunks_by_doc` 인메모리 캐시를 통합하고 `_load_groups_by_path()`에 2.0초 TTL을 적용해 검색 중 불필요한 SQLite 반복 쿼리 및 파일 `stat()` 호출 제거
+  - `evidence.py`에 보고서 기간 질의 사전 판별(`parse_report_query`) 및 정규식 프리컴파일, `server.py`에 조기 종료 횟수 집계(`_count_capped3`) 적용
+- **실시간 타이핑 반응성(IME 조합·디바운스·캐시·렌더링) 개선 (`app/index.html`)**:
+  - 한글 입력 조합 중 끝 자모 보정 기준(`normalizeLiveQuery`)으로 동일 검색어(`교` → `교ㅊ`) 입력 시 진행 중인 요청을 강제 취소(`abort`)하거나 중복 요청하지 않도록 개선하고 디바운스 지연 시간을 `45ms` → `15ms`로 단축
+  - 클라이언트 인메모리 결과 캐시(`searchCache`, 최대 40개, 스캔 갱신 시 자동 무효화)를 추가해 백스페이스/재입력 시 즉시 렌더링
+  - 즐겨찾기 `Set`(`favIdSet`) `O(1)` 조회, 하이라이팅 정규식 단일 컴파일(`buildHighlightRegex`), 폴더 브레드크럼 이벤트 위임 적용으로 결과 목록 DOM 렌더링 지연 최소화
+
 ## [1.4.8] - 2026-11-18
 ### Added
 - **모든 업무 폴더(빈 폴더 포함 5,713개) 색인 및 검색 지원 (`app/catalog.py`, `app/server.py`, `app/index.html`)**:

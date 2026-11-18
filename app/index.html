@@ -848,6 +848,33 @@ let state = {
 let toastTimer = null;
 let liveTimer = null;
 let searchAbort = null;
+let activeSearchKey = '';
+let lastScanSeen = null;
+const searchCache = new Map();
+const TRAILING_JAMO_RX = /([^\s\u3131-\u318E\u1100-\u11FF\uA960-\uA97F\uD7B0-\uD7FF"])[\u3131-\u318E\u1100-\u11FF\uA960-\uA97F\uD7B0-\uD7FF]+(?=\s|"|$)/g;
+
+function normalizeLiveQuery(raw) {
+  return String(raw ?? '').trim().replace(TRAILING_JAMO_RX, '$1');
+}
+
+function getEffectiveApiQuery(rawQ) {
+  return (state.excludeMail && !/(?:^|\s)-메일보관\//.test(rawQ))
+    ? (rawQ.trim() ? rawQ.trim() + ' -메일보관/' : '-메일보관/')
+    : rawQ;
+}
+
+function buildSearchKey(rawQuery, offset = 0) {
+  return JSON.stringify([
+    normalizeLiveQuery(getEffectiveApiQuery(rawQuery)),
+    catEl.value,
+    state.scope,
+    extEl.value,
+    sortEl.value,
+    state.folder,
+    state.excludeMail ? '1' : '',
+    offset,
+  ]);
+}
 
 const bodyAvailability = {
   pending: '아직 본문을 색인하지 않았습니다.',
@@ -907,21 +934,34 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-function appendHighlighted(target, text, terms) {
+function buildHighlightRegex(terms) {
+  const valid = (terms || []).filter(Boolean);
+  if (!valid.length) return null;
+  return new RegExp('(' + valid.map(escapeRegExp).join('|') + ')', 'gi');
+}
+
+function appendHighlighted(target, text, termsOrRx) {
   const str = String(text ?? '');
-  if (!str || !terms || !terms.length) {
+  const rx = termsOrRx instanceof RegExp ? termsOrRx : buildHighlightRegex(termsOrRx);
+  if (!str || !rx) {
     target.textContent = str;
     return;
   }
-  const rx = new RegExp('(' + terms.map(escapeRegExp).join('|') + ')', 'gi');
+  rx.lastIndex = 0;
+  let m = rx.exec(str);
+  if (!m) {
+    target.textContent = str;
+    return;
+  }
   let last = 0, count = 0;
-  for (const m of str.matchAll(rx)) {
+  while (m) {
     if (m.index > last) target.append(document.createTextNode(str.slice(last, m.index)));
     const mk = document.createElement('mark');
     mk.textContent = m[0];
     target.append(mk);
     last = m.index + m[0].length;
-    if (++count >= 60) break;
+    if (++count >= 60 || m[0].length === 0) break;
+    m = rx.exec(str);
   }
   if (last < str.length) target.append(document.createTextNode(str.slice(last)));
 }
@@ -969,7 +1009,8 @@ function renderRecentQueries() {
 }
 
 function getFavorites() { return readStorageList(FAV_KEY); }
-function isFav(id) { return getFavorites().some(f => f.id === id); }
+let favIdSet = new Set(getFavorites().map(f => f.id));
+function isFav(id) { return favIdSet.has(id); }
 function toggleFav(file) {
   const list = getFavorites();
   const exists = list.some(f => f.id === file.id);
@@ -977,11 +1018,15 @@ function toggleFav(file) {
     ? list.filter(f => f.id !== file.id)
     : [{ id: file.id, kind: file.kind, path: file.path, extension: file.extension, size: file.size, mtime: file.mtime, category: file.category, status: file.status, status_label: file.status_label }, ...list].slice(0, 50);
   writeStorageList(FAV_KEY, next);
+  favIdSet = new Set(next.map(f => f.id));
   showToast(exists ? '즐겨찾기에서 해제했습니다.' : '즐겨찾기에 추가했습니다.');
   if (state.sideTab === 'favs') renderSidebar();
   renderResultsOnly();
   if (state.selectedId === file.id) openInspector(file);
 }
+window.addEventListener('storage', e => {
+  if (e.key === FAV_KEY) favIdSet = new Set(getFavorites().map(f => f.id));
+});
 
 function recordOpened(file) {
   if (!file || !file.id) return;
@@ -1127,7 +1172,7 @@ function renderBreadcrumbs() {
   }
 }
 
-function renderPathSegments(container, fullPath, terms) {
+function renderPathSegments(container, fullPath, termsOrRx) {
   const dirPart = fullPath.includes('/') ? fullPath.slice(0, fullPath.lastIndexOf('/')) : '';
   if (!dirPart) {
     container.textContent = '(최상위 폴더)';
@@ -1142,11 +1187,20 @@ function renderPathSegments(container, fullPath, terms) {
     const btn = node('button', '', 'crumb-link');
     btn.type = 'button';
     btn.title = `이 폴더로 필터: ${target}`;
-    appendHighlighted(btn, seg, terms);
-    btn.onclick = e => { e.stopPropagation(); setFolderFilter(target); };
+    btn.dataset.folderPath = target;
+    appendHighlighted(btn, seg, termsOrRx);
     container.append(btn);
   });
 }
+
+function handleDelegatedFolderClick(e) {
+  const btn = e.target.closest('button.crumb-link[data-folder-path]');
+  if (!btn) return;
+  e.stopPropagation();
+  setFolderFilter(btn.dataset.folderPath);
+}
+resultsContainer.addEventListener('click', handleDelegatedFolderClick);
+inspectorBody.addEventListener('click', handleDelegatedFolderClick);
 
 /* Sidebar Rendering */
 function renderSidebar() {
@@ -1281,6 +1335,7 @@ function buildExcelWidget(file, terms, attIndex = null) {
       sel.onchange = () => { sheet = Number(sel.value); start = 1; load(); };
       area.append(sel);
       if (data.rows.length) {
+        const rx = terms instanceof RegExp ? terms : buildHighlightRegex(terms);
         const sc = node('div', '', 'excel-scroll');
         const tbl = document.createElement('table');
         tbl.className = 'excel-table';
@@ -1289,7 +1344,7 @@ function buildExcelWidget(file, terms, attIndex = null) {
           tr.append(node('th', String(data.start + i)));
           row.forEach(cell => {
             const td = document.createElement('td');
-            appendHighlighted(td, cell, terms);
+            appendHighlighted(td, cell, rx);
             tr.append(td);
           });
           tbl.append(tr);
@@ -1369,11 +1424,12 @@ function buildDetailWidget(file, terms) {
       area.append(node('p', '저장된 본문 텍스트가 없습니다.', 'row-sub'));
       return;
     }
+    const rx = terms instanceof RegExp ? terms : buildHighlightRegex(terms);
     for (const part of detail.parts) {
       const loc = node('strong', part.location);
       loc.style.cssText = 'display:block;font-size:12px;margin-top:8px;';
       const pre = node('pre', '', 'snippet-pre');
-      appendHighlighted(pre, part.text, terms);
+      appendHighlighted(pre, part.text, rx);
       area.append(loc, pre);
     }
   }).catch(() => { area.textContent = '본문을 불러오지 못했습니다.'; });
@@ -1387,6 +1443,7 @@ function openInspector(file) {
   renderResultsSelection();
 
   const terms = state.highlightTerms;
+  const rx = buildHighlightRegex(terms);
   inspectorBody.replaceChildren();
 
   const meta = node('div', '', 'card-meta');
@@ -1406,7 +1463,7 @@ function openInspector(file) {
   inspectorBody.append(meta);
 
   const title = node('h3', '', 'insp-title');
-  appendHighlighted(title, file.related ? file.related.title : file.path.split('/').pop(), terms);
+  appendHighlighted(title, file.related ? file.related.title : file.path.split('/').pop(), rx);
   inspectorBody.append(title);
 
   if (file.kind === 'mail') {
@@ -1414,12 +1471,12 @@ function openInspector(file) {
     const senderText = file.sender ? `발신: ${file.sender}` : '발신자 미확인';
     const srcText = file.source ? ` · ${file.source}` : '';
     const dtText = file.date ? ` · ${new Date(file.date).toLocaleString('ko-KR')}` : '';
-    appendHighlighted(mailInfo, `${senderText}${srcText}${dtText}`, terms);
+    appendHighlighted(mailInfo, `${senderText}${srcText}${dtText}`, rx);
     inspectorBody.append(mailInfo);
   }
 
   const pathRow = node('div', '', 'row-sub');
-  renderPathSegments(pathRow, file.path, terms);
+  renderPathSegments(pathRow, file.path, rx);
   inspectorBody.append(pathRow);
 
   const feedback = node('p', '', 'feedback-line');
@@ -1479,7 +1536,7 @@ function openInspector(file) {
     sec.append(node('h4', file.location || '검색 근거'));
     if (file.evidence_label) sec.append(node('p', file.evidence_label, 'row-sub'));
     const pre = node('pre', '', 'snippet-pre');
-    appendHighlighted(pre, file.snippet, terms);
+    appendHighlighted(pre, file.snippet, rx);
     sec.append(pre);
     inspectorBody.append(sec);
   }
@@ -1496,7 +1553,7 @@ function openInspector(file) {
       head.append(node('span', aem.label, 'badge badge-ext ' + aem.cls));
       const nm = node('span');
       nm.style.marginLeft = '6px';
-      appendHighlighted(nm, att.name, terms);
+      appendHighlighted(nm, att.name, rx);
       head.append(nm);
       const bar = node('div', '', 'mini-actions');
       bar.style.marginTop = '6px';
@@ -1617,7 +1674,7 @@ function renderResultsOnly() {
   const banner = buildFolderScopeBanner();
   if (banner) resultsContainer.append(banner);
   const hits = state.hits;
-  const terms = state.highlightTerms;
+  const rx = buildHighlightRegex(state.highlightTerms);
 
   if (!hits.length) {
     const empty = node('div', '', 'empty-box');
@@ -1657,7 +1714,8 @@ function renderResultsOnly() {
       // Star
       const tdStar = document.createElement('td');
       tdStar.style.cssText = 'text-align:center;padding-left:2px;padding-right:2px;';
-      const star = node('button', isFav(h.id) ? '★' : '☆', 'star-btn' + (isFav(h.id) ? ' starred' : ''));
+      const fav = isFav(h.id);
+      const star = node('button', fav ? '★' : '☆', 'star-btn' + (fav ? ' starred' : ''));
       star.type = 'button';
       star.title = '즐겨찾기';
       star.onclick = e => { e.stopPropagation(); toggleFav(h); };
@@ -1677,7 +1735,7 @@ function renderResultsOnly() {
       const titleDiv = node('div', '', 'row-title');
       const titleText = node('span', '', 'row-title-text');
       titleText.title = rawTitle;
-      appendHighlighted(titleText, rawTitle, terms);
+      appendHighlighted(titleText, rawTitle, rx);
       titleDiv.append(titleText);
       if (h.kind === 'mail') {
         titleDiv.append(node('span', '✉️ 메일', 'badge badge-mail'));
@@ -1690,13 +1748,13 @@ function renderResultsOnly() {
       const pathDiv = node('div', '', 'row-sub');
       if (h.kind === 'mail' && h.sender) {
         const senderSpan = document.createElement('span');
-        appendHighlighted(senderSpan, `발신: ${h.sender} · `, terms);
+        appendHighlighted(senderSpan, `발신: ${h.sender} · `, rx);
         pathDiv.append(senderSpan);
         pathDiv.title = `발신: ${h.sender} · ${h.path}`;
       } else {
         pathDiv.title = h.path;
       }
-      renderPathSegments(pathDiv, h.path, terms);
+      renderPathSegments(pathDiv, h.path, rx);
       tdName.append(titleDiv, pathDiv);
 
       // Snippet summary
@@ -1713,7 +1771,7 @@ function renderResultsOnly() {
         if (shortSnip) {
           const snip = node('div', '', 'row-sub');
           snip.title = shortSnip.slice(0, 260);
-          appendHighlighted(snip, shortSnip.slice(0, 120), terms);
+          appendHighlighted(snip, shortSnip.slice(0, 120), rx);
           tdEv.append(snip);
         }
       }
@@ -1751,8 +1809,14 @@ function renderResultsOnly() {
       tdAct.append(act);
 
       tr.append(tdStar, tdExt, tdName, tdEv, tdSize, tdDate, tdAct);
-      tr.onclick = () => openInspector(h);
-      tr.ondblclick = () => postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.');
+      tr.onclick = e => {
+        if (e.target.closest('button.crumb-link[data-folder-path]')) return;
+        openInspector(h);
+      };
+      tr.ondblclick = e => {
+        if (e.target.closest('button.crumb-link[data-folder-path]')) return;
+        postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.');
+      };
       tbody.append(tr);
     }
     tbl.append(tbody);
@@ -1778,20 +1842,21 @@ function renderResultsOnly() {
       if (h.size) meta.append(node('span', formatSize(h.size), 'badge'));
       if (h.mtime) meta.append(node('span', (h.kind === 'mail' ? '일시 ' : '수정 ') + formatDate(h.mtime), 'badge'));
 
-      const star = node('button', isFav(h.id) ? '★' : '☆', 'star-btn' + (isFav(h.id) ? ' starred' : ''));
+      const fav = isFav(h.id);
+      const star = node('button', fav ? '★' : '☆', 'star-btn' + (fav ? ' starred' : ''));
       star.type = 'button';
       star.onclick = e => { e.stopPropagation(); toggleFav(h); };
       top.append(meta, star);
 
       const title = node('h2', '', 'card-title');
-      appendHighlighted(title, h.related ? h.related.title : h.path.split('/').pop(), terms);
+      appendHighlighted(title, h.related ? h.related.title : h.path.split('/').pop(), rx);
       const pathDiv = node('div', '', 'row-sub');
-      renderPathSegments(pathDiv, h.path, terms);
+      renderPathSegments(pathDiv, h.path, rx);
 
       card.append(top, title, pathDiv);
       if (h.kind === 'mail' && h.sender) {
         const sLine = node('div', '', 'row-sub');
-        appendHighlighted(sLine, '발신: ' + h.sender + (h.attachments && h.attachments.length ? ` · 📎 첨부: ${h.attachments.map(a => a.name).join(', ')}` : ''), terms);
+        appendHighlighted(sLine, '발신: ' + h.sender + (h.attachments && h.attachments.length ? ` · 📎 첨부: ${h.attachments.map(a => a.name).join(', ')}` : ''), rx);
         card.append(sLine);
       }
       if (h.evidence_label || h.period_label) {
@@ -1799,7 +1864,7 @@ function renderResultsOnly() {
       }
       if (h.snippet && h.kind !== 'folder') {
         const pre = node('pre', '', 'snippet-pre');
-        appendHighlighted(pre, h.snippet, terms);
+        appendHighlighted(pre, h.snippet, rx);
         card.append(pre);
       }
 
@@ -1833,8 +1898,14 @@ function renderResultsOnly() {
       bar.append(cBtn);
       card.append(bar);
 
-      card.onclick = () => openInspector(h);
-      card.ondblclick = () => postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.');
+      card.onclick = e => {
+        if (e.target.closest('button.crumb-link[data-folder-path]')) return;
+        openInspector(h);
+      };
+      card.ondblclick = e => {
+        if (e.target.closest('button.crumb-link[data-folder-path]')) return;
+        postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.');
+      };
       wrap.append(card);
     }
     resultsContainer.append(wrap);
@@ -1846,6 +1917,7 @@ function hasAnyFilter() {
 }
 
 function resetToWelcome(msg = '검색어를 입력하거나 왼쪽 업무 폴더를 선택해 주세요.') {
+  activeSearchKey = '';
   state.hits = [];
   state.facets = null;
   state.total = 0;
@@ -1865,11 +1937,71 @@ function resetToWelcome(msg = '검색어를 입력하거나 왼쪽 업무 폴더
   resultsContainer.replaceChildren(box);
 }
 
+function applySearchResult(data, offset, live, elapsed) {
+  const append = offset > 0;
+  if (data.message) {
+    state.hits = [];
+    state.total = 0;
+    state.outsideFolderTotal = 0;
+    state.globalTotal = 0;
+    state.facets = null;
+    state.hasMore = false;
+    statusEl.textContent = data.message;
+    loadMoreWrap.style.display = 'none';
+    resultsContainer.replaceChildren();
+    const box = node('div', '', 'empty-box');
+    box.append(node('p', data.message));
+    resultsContainer.append(box);
+    renderSidebar();
+    return;
+  }
+
+  if (!live && !append && q.value.trim().length >= 1) saveRecentQuery(q.value);
+
+  state.hits = append ? [...state.hits, ...data.hits] : data.hits;
+  state.total = data.total;
+  state.outsideFolderTotal = Number(data.outside_folder_total || 0);
+  state.globalTotal = Number(data.global_total || data.total || 0);
+  state.offset = offset;
+  state.hasMore = Boolean(data.has_more);
+  state.facets = data.facets || null;
+  state.highlightTerms = data.highlight_terms || [];
+
+  const modeTag = data.browse_mode ? '폴더·조건 탐색 · ' : '';
+  statusEl.textContent = `${modeTag}${data.total.toLocaleString()}개 결과 중 ${state.hits.length.toLocaleString()}개 표시 · ${elapsed}초`;
+  loadMoreWrap.style.display = state.hasMore ? 'block' : 'none';
+  loadMoreBtn.disabled = false;
+  loadMoreBtn.textContent = `더 보기 (+100개 · ${state.total - state.hits.length}개 남음)`;
+
+  if (!append && state.selectedId && !state.hits.some(h => h.id === state.selectedId)) {
+    closeInspector();
+  }
+  if (!append) state.sideTab = 'facets';
+  renderResultsOnly();
+  renderSidebar();
+}
+
 /* Search API */
 async function runSearch(offset = 0, { live = false } = {}) {
   const g = ++state.generation;
   const append = offset > 0;
+  const start = performance.now();
+  const rawQ = q.value;
+  const searchKey = !append ? buildSearchKey(rawQ, 0) : '';
+  if (!append) activeSearchKey = searchKey;
+
   if (searchAbort) searchAbort.abort();
+  if (!append && live && searchCache.has(searchKey)) {
+    searchAbort = null;
+    renderBreadcrumbs();
+    const cached = searchCache.get(searchKey);
+    searchCache.delete(searchKey);
+    searchCache.set(searchKey, cached);
+    const elapsed = ((performance.now() - start) / 1000).toFixed(3);
+    applySearchResult(cached, 0, true, elapsed);
+    return;
+  }
+
   searchAbort = new AbortController();
 
   if (!append && !live) {
@@ -1881,11 +2013,7 @@ async function runSearch(offset = 0, { live = false } = {}) {
   renderBreadcrumbs();
 
   try {
-    const start = performance.now();
-    const rawQ = q.value;
-    const apiQ = (state.excludeMail && !/(?:^|\s)-메일보관\//.test(rawQ))
-      ? (rawQ.trim() ? rawQ.trim() + ' -메일보관/' : '-메일보관/')
-      : rawQ;
+    const apiQ = getEffectiveApiQuery(rawQ);
     const params = new URLSearchParams({
       q: apiQ,
       category: catEl.value,
@@ -1902,50 +2030,22 @@ async function runSearch(offset = 0, { live = false } = {}) {
     const data = await r.json();
     if (g !== state.generation) return;
 
+    if (!append && !data.message) {
+      if (searchCache.size >= 40) {
+        const oldestKey = searchCache.keys().next().value;
+        searchCache.delete(oldestKey);
+      }
+      searchCache.set(searchKey, data);
+    }
+
     const elapsed = ((performance.now() - start) / 1000).toFixed(3);
-    if (data.message) {
-      state.hits = [];
-      state.total = 0;
-      state.outsideFolderTotal = 0;
-      state.globalTotal = 0;
-      state.facets = null;
-      state.hasMore = false;
-      statusEl.textContent = data.message;
-      loadMoreWrap.style.display = 'none';
-      resultsContainer.replaceChildren();
-      const box = node('div', '', 'empty-box');
-      box.append(node('p', data.message));
-      resultsContainer.append(box);
-      renderSidebar();
-      return;
-    }
-
-    if (!live && !append && q.value.trim().length >= 1) saveRecentQuery(q.value);
-
-    state.hits = append ? [...state.hits, ...data.hits] : data.hits;
-    state.total = data.total;
-    state.outsideFolderTotal = Number(data.outside_folder_total || 0);
-    state.globalTotal = Number(data.global_total || data.total || 0);
-    state.offset = offset;
-    state.hasMore = Boolean(data.has_more);
-    state.facets = data.facets || null;
-    state.highlightTerms = data.highlight_terms || [];
-
-    const modeTag = data.browse_mode ? '폴더·조건 탐색 · ' : '';
-    statusEl.textContent = `${modeTag}${data.total.toLocaleString()}개 결과 중 ${state.hits.length.toLocaleString()}개 표시 · ${elapsed}초`;
-    loadMoreWrap.style.display = state.hasMore ? 'block' : 'none';
-    loadMoreBtn.disabled = false;
-    loadMoreBtn.textContent = `더 보기 (+100개 · ${state.total - state.hits.length}개 남음)`;
-
-    if (!append && state.selectedId && !state.hits.some(h => h.id === state.selectedId)) {
-      closeInspector();
-    }
-    if (!append) state.sideTab = 'facets';
-    renderResultsOnly();
-    renderSidebar();
+    applySearchResult(data, offset, live, elapsed);
   } catch (err) {
     if (err && err.name === 'AbortError') return;
-    if (g === state.generation) statusEl.textContent = '검색 연결을 확인해 주세요.';
+    if (g === state.generation) {
+      if (!append) activeSearchKey = '';
+      statusEl.textContent = '검색 연결을 확인해 주세요.';
+    }
   }
 }
 
@@ -1969,7 +2069,9 @@ function scheduleLiveSearch() {
     return;
   }
   if (/^[\u3131-\u318E]+$/.test(raw) && !hasAnyFilter()) return;
-  liveTimer = setTimeout(() => runSearch(0, { live: true }), 45);
+  const nextKey = buildSearchKey(q.value, 0);
+  if (nextKey === activeSearchKey) return;
+  liveTimer = setTimeout(() => runSearch(0, { live: true }), 15);
 }
 
 q.addEventListener('input', scheduleLiveSearch);
@@ -2075,6 +2177,8 @@ loadMoreBtn.onclick = () => runSearch(state.offset + 100);
 
 rescanBtn.onclick = async () => {
   rescanBtn.disabled = true;
+  searchCache.clear();
+  activeSearchKey = '';
   try {
     const r = await fetch('/api/rescan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
     const d = await r.json();
@@ -2139,6 +2243,12 @@ async function health() {
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
+    const nextScan = d.state.last_scan || '';
+    if (lastScanSeen !== null && nextScan !== lastScanSeen) {
+      searchCache.clear();
+      activeSearchKey = '';
+    }
+    lastScanSeen = nextScan;
     state.scanActive = d.state.scan_running === '1';
     if (d.root_name) document.querySelector('#root-label').textContent = '대상: ' + d.root_name;
     const totalChip = document.querySelector('#stat-total');

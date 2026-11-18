@@ -10,7 +10,7 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 from catalog import BASE, DB, ROOT, connect, clean, grams, init, scan, seed, process, state, norm, category
-from evidence import has_date, record_query, record_evidence, report_period
+from evidence import has_date, record_query, record_evidence, report_period, parse_report_query
 from related import group_related
 from mail_archive import get_mail_cache, get_mail_by_id, resolve_mail_target_path, mail_snippet
 
@@ -45,7 +45,7 @@ OPEN_LOCAL_EXTENSIONS = ORIGINAL_EXTENSIONS | frozenset(('.msg', '.eml', '.csv',
 FOLDER_ID_OFFSET = 1_000_000
 scan_lock = threading.Lock()
 _CATALOG_LOCK = threading.Lock()
-_CATALOG_CACHE = {'sig': None, 'docs': [], 'aliases': [], 'folders': []}
+_CATALOG_CACHE = {'sig': None, 'checked_at': 0.0, 'docs': [], 'aliases': [], 'folders': [], 'chunks_by_doc': {}}
 
 QC_PREFIX = r'(?<![a-z0-9])q/?c[ \t]*[-‐‑–]?[ \t]*'
 QC_NUMBER = re.compile(QC_PREFIX + r'([0-9]{3})(?![a-z0-9])(?:호기?)?')
@@ -65,15 +65,18 @@ def strip_trailing_jamo(text):
 
 
 def _build_cache_entry(row, matched_alias=None):
-    path_clean = clean(matched_alias or row['path'])
-    name_clean = clean(Path(row['path']).name)
+    path = row['path']
+    path_clean = clean(matched_alias or path)
+    name_clean = clean(Path(path).name)
     body = row['body'] or ''
     body_clean = clean(body) if body else ''
     return {
         'id': row['id'],
-        'path': row['path'],
+        'path': path,
+        'top_folder': path.split('/', 1)[0] if '/' in path else '(루트)',
         'category': row['category'],
         'status': row['status'],
+        'status_label': LABELS[row['status']],
         'extension': row['extension'],
         'size': row['size'],
         'mtime': row['mtime'],
@@ -93,8 +96,10 @@ def _build_folder_entry(row):
         'id': -FOLDER_ID_OFFSET - row['id'],
         'kind': 'folder',
         'path': path,
+        'top_folder': path.split('/', 1)[0] if '/' in path else '(루트)',
         'category': category(path),
         'status': 'unsupported',
+        'status_label': '업무 폴더',
         'extension': '.folder',
         'size': 0,
         'mtime': row['mtime'],
@@ -106,42 +111,75 @@ def _build_folder_entry(row):
     }
 
 
-def get_catalog_cache(c):
-    """Return normalized in-memory document, alias, and folder lists, rebuilding on DB change."""
-    cnt, max_idx = c.execute('select count(*), coalesce(max(indexed_at), 0) from docs where present=1').fetchone()
-    has_folders_tbl = bool(c.execute("select 1 from sqlite_master where type='table' and name='folders'").fetchone())
-    folder_cnt = c.execute('select count(*) from folders where present=1').fetchone()[0] if has_folders_tbl else 0
-    last_scan_row = c.execute("select value from state where key='last_scan'").fetchone()
-    sig = (cnt, max_idx, folder_cnt, last_scan_row[0] if last_scan_row else '')
-
+def get_catalog_cache(c=None, force=False):
+    """Return normalized in-memory document, alias, folder, and chunk caches, rebuilding on DB change."""
+    now = time.monotonic()
     with _CATALOG_LOCK:
-        if _CATALOG_CACHE['sig'] == sig:
-            return _CATALOG_CACHE['docs'], _CATALOG_CACHE['aliases'], _CATALOG_CACHE['folders']
+        if not force and _CATALOG_CACHE['sig'] is not None and (now - _CATALOG_CACHE['checked_at']) < 1.5:
+            return (
+                _CATALOG_CACHE['docs'],
+                _CATALOG_CACHE['aliases'],
+                _CATALOG_CACHE['folders'],
+                _CATALOG_CACHE['chunks_by_doc'],
+            )
 
-    docs = [
-        _build_cache_entry(r)
-        for r in c.execute('select id,path,category,status,extension,size,mtime,body from docs where present=1')
-    ]
-    aliases = [
-        _build_cache_entry(r, matched_alias=r['matched_alias'])
-        for r in c.execute("""
-            select d.id,d.path,d.category,d.status,d.extension,d.size,d.mtime,d.body,a.path as matched_alias
-            from photo_aliases p
-            join docs a on a.id=p.source_id and a.present=0 and a.size=p.size and a.mtime=p.source_mtime
-            join docs d on d.id=p.target_id and d.present=1 and d.size=p.size and d.mtime=p.target_mtime
-        """)
-    ]
-    folders = [
-        _build_folder_entry(r)
-        for r in c.execute('select id,path,mtime from folders where present=1')
-    ] if has_folders_tbl else []
+    own_conn = c is None
+    if own_conn:
+        c = connect()
+    try:
+        cnt, max_idx = c.execute('select count(*), coalesce(max(indexed_at), 0) from docs where present=1').fetchone()
+        has_folders_tbl = bool(c.execute("select 1 from sqlite_master where type='table' and name='folders'").fetchone())
+        folder_cnt = c.execute('select count(*) from folders where present=1').fetchone()[0] if has_folders_tbl else 0
+        last_scan_row = c.execute("select value from state where key='last_scan'").fetchone()
+        sig = (cnt, max_idx, folder_cnt, last_scan_row[0] if last_scan_row else '')
 
-    with _CATALOG_LOCK:
-        _CATALOG_CACHE['sig'] = sig
-        _CATALOG_CACHE['docs'] = docs
-        _CATALOG_CACHE['aliases'] = aliases
-        _CATALOG_CACHE['folders'] = folders
-    return docs, aliases, folders
+        with _CATALOG_LOCK:
+            if not force and _CATALOG_CACHE['sig'] == sig:
+                _CATALOG_CACHE['checked_at'] = now
+                return (
+                    _CATALOG_CACHE['docs'],
+                    _CATALOG_CACHE['aliases'],
+                    _CATALOG_CACHE['folders'],
+                    _CATALOG_CACHE['chunks_by_doc'],
+                )
+
+        docs = [
+            _build_cache_entry(r)
+            for r in c.execute('select id,path,category,status,extension,size,mtime,body from docs where present=1')
+        ]
+        aliases = [
+            _build_cache_entry(r, matched_alias=r['matched_alias'])
+            for r in c.execute("""
+                select d.id,d.path,d.category,d.status,d.extension,d.size,d.mtime,d.body,a.path as matched_alias
+                from photo_aliases p
+                join docs a on a.id=p.source_id and a.present=0 and a.size=p.size and a.mtime=p.source_mtime
+                join docs d on d.id=p.target_id and d.present=1 and d.size=p.size and d.mtime=p.target_mtime
+            """)
+        ]
+        folders = [
+            _build_folder_entry(r)
+            for r in c.execute('select id,path,mtime from folders where present=1')
+        ] if has_folders_tbl else []
+        chunks_by_doc = {}
+        for doc_id, loc, text, method in c.execute('select doc_id,location,text,method from chunks order by rowid'):
+            chunks_by_doc.setdefault(doc_id, []).append({
+                'location': loc,
+                'text': text,
+                'method': method,
+                'text_clean': clean(text),
+            })
+
+        with _CATALOG_LOCK:
+            _CATALOG_CACHE['sig'] = sig
+            _CATALOG_CACHE['checked_at'] = time.monotonic()
+            _CATALOG_CACHE['docs'] = docs
+            _CATALOG_CACHE['aliases'] = aliases
+            _CATALOG_CACHE['folders'] = folders
+            _CATALOG_CACHE['chunks_by_doc'] = chunks_by_doc
+        return docs, aliases, folders, chunks_by_doc
+    finally:
+        if own_conn:
+            c.close()
 
 
 def search_terms(query):
@@ -289,6 +327,21 @@ def fts_match_expr(terms, lengths, drawing_parts, phrases, or_groups):
     return ' AND '.join(clauses)
 
 
+def _count_capped3(text, sub):
+    """Count non-overlapping occurrences of sub in text, stopping once 3 matches are found."""
+    if not sub:
+        return 0
+    pos = text.find(sub)
+    if pos == -1:
+        return 0
+    step = len(sub)
+    pos = text.find(sub, pos + step)
+    if pos == -1:
+        return 1
+    pos = text.find(sub, pos + step)
+    return 2 if pos == -1 else 3
+
+
 def compute_facets(hits, active_folder=''):
     """Aggregate folder, extension, category, and index status counts across all hits."""
     prefix = norm(active_folder).strip('/')
@@ -307,6 +360,8 @@ def compute_facets(hits, active_folder=''):
                 folder_counts[(sub_name, f'{prefix}/{sub_name}')] += 1
             else:
                 folder_counts[('(현재 폴더 내 파일)', prefix)] += 1
+        elif not prefix_slash and (top := h.get('top_folder')) is not None:
+            folder_counts[(top, '' if top == '(루트)' else top)] += 1
         elif '/' in path:
             top = path.split('/', 1)[0]
             folder_counts[(top, top)] += 1
@@ -377,11 +432,22 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         pattern for (term, equipment), pattern in zip(terms, patterns)
         if equipment is not None or term in length_patterns or term in drawing_patterns
     ]
+    req_set = set(substr_terms)
+    for term, equipment in terms:
+        if equipment is not None:
+            req_set.update((term, 'q', 'c'))
+        elif term in lengths:
+            req_set.update(lengths[term])
+        elif term in drawing_parts:
+            req_set.update(drawing_parts[term])
+    required_substrs = sorted(req_set, key=len, reverse=True)
+    req0 = required_substrs[0] if len(required_substrs) == 1 else None
 
     excludes = parsed['excludes']
     phrases = parsed['phrases']
     or_groups = parsed['or_groups']
     path_filters = parsed['path_filters']
+    parsed_period = parse_report_query(positive_query) if positive_query else None
 
     numeric_context = not record and len(set(terms)) > 1 and any(re.search(r'[0-9]', term) for term, _ in terms)
     context_patterns = [
@@ -426,8 +492,7 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
 
     has_query = bool(terms or parsed['phrases'] or parsed['or_groups'])
 
-    c = connect()
-    docs_cache, aliases_cache, folders_cache = get_catalog_cache(c) if need_docs else ([], [], [])
+    docs_cache, aliases_cache, folders_cache, chunks_by_doc = get_catalog_cache() if need_docs else ([], [], [], {})
     mails_cache, mail_by_id = get_mail_cache() if need_mails else ([], {})
     doc_rows = (docs_cache if scope == 'body' else chain(docs_cache, aliases_cache, folders_cache)) if need_docs else ()
     mail_rows = mails_cache if need_mails else ()
@@ -441,6 +506,7 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
     split_length_rows = set()
     priority_ids = set()
     score_substrs = substr_terms + phrases + [alt for grp in or_groups for alt in grp]
+    sc0 = score_substrs[0] if len(score_substrs) == 1 else None
 
     for r in rows:
         doc_id = r['id']
@@ -477,9 +543,18 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         body = r['body_clean']
         text = body if scope == 'body' else r['text_all']
 
+        if req0 is not None:
+            if req0 not in text:
+                continue
+        elif required_substrs:
+            matched_req = True
+            for t in required_substrs:
+                if t not in text:
+                    matched_req = False
+                    break
+            if not matched_req:
+                continue
         if excludes and any(ex in text for ex in excludes):
-            continue
-        if substr_terms and not all(t in text for t in substr_terms):
             continue
         if rx_terms and not all(rx.search(text) for rx in rx_terms):
             continue
@@ -494,51 +569,55 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
             outside_matched_ids.add(doc_id)
             continue
 
-        score = sum(min(3, body.count(s)) for s in score_substrs) if body else 0
-        if rx_terms and body:
-            score += sum(min(3, len(rx.findall(body))) for rx in rx_terms)
+        if body:
+            score = _count_capped3(body, sc0) if sc0 is not None else sum(_count_capped3(body, s) for s in score_substrs)
+            if rx_terms:
+                score += sum(min(3, len(rx.findall(body))) for rx in rx_terms)
+        else:
+            score = 0
         if scope != 'body':
             name = r['name_clean']
-            score += sum(8 * (s in name) + 2 * (s in path) for s in score_substrs)
+            if sc0 is not None:
+                score += 8 * (sc0 in name) + 2 * (sc0 in path)
+            else:
+                score += sum(8 * (s in name) + 2 * (s in path) for s in score_substrs)
             if rx_terms:
                 score += sum(8 * bool(rx.search(name)) + 2 * bool(rx.search(path)) for rx in rx_terms)
 
         if is_mail:
-            att_cnt = len(r['attachments'])
             hit = dict(
-                id=doc_id, kind='mail', path=r['path'], category='메일자료', status='ready',
-                status_label=f'메일 자료 · 첨부 {att_cnt}개' if att_cnt else '메일 자료',
+                id=doc_id, kind='mail', path=r['path'], top_folder=r['top_folder'],
+                category='메일자료', status='ready', status_label=r['status_label'],
                 score=score, extension='.mail', size=r['size'], mtime=r['mtime'],
                 sender=r['sender'], date=r['date'], year=r['year'], source=r['source'],
-                attachments=[
-                    {'index': i, 'name': a.get('name', ''), 'ext': Path(a.get('name', '')).suffix.lower()}
-                    for i, a in enumerate(r['attachments'])
-                ],
+                attachments=r['attachments_ui'],
             )
         elif is_folder:
             hit = dict(
-                id=doc_id, kind='folder', path=r['path'], category=r['category'], status='unsupported',
-                status_label='업무 폴더', score=score, extension='.folder',
+                id=doc_id, kind='folder', path=r['path'], top_folder=r['top_folder'],
+                category=r['category'], status='unsupported',
+                status_label=r['status_label'], score=score, extension='.folder',
                 size=0, mtime=r['mtime'],
             )
         else:
             hit = dict(
-                id=doc_id, kind='doc', path=r['path'], category=r['category'], status=r['status'],
-                status_label=LABELS[r['status']], score=score, extension=r['extension'],
+                id=doc_id, kind='doc', path=r['path'], top_folder=r['top_folder'],
+                category=r['category'], status=r['status'],
+                status_label=r['status_label'], score=score, extension=r['extension'],
                 size=r['size'], mtime=r['mtime'],
             )
             if r['matched_alias']:
                 hit['matched_alias'] = r['matched_alias']
-            if positive_query:
-                period = report_period(r['path'], positive_query)
+            if parsed_period:
+                period = report_period(r['path'], positive_query, parsed_period)
                 if period:
                     hit['period_label'] = period['label']
                     if period['matches']:
                         hit['score'] += 100
                         priority_ids.add(doc_id)
+            doc_chunks = chunks_by_doc.get(doc_id, ())
             if record:
-                chunks = c.execute('select location,text,method from chunks where doc_id=?', (doc_id,)).fetchall()
-                proof = record_evidence(chunks, *record)
+                proof = record_evidence(doc_chunks, *record)
                 if proof:
                     hit.update(location=proof['location'], snippet=proof['snippet'], evidence_label=proof['label'], method='record')
                     hit['score'] += 100
@@ -548,11 +627,10 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
             if drawing_numbers and r['extension'] == '.pdf' and r['status'] == 'partial':
                 best = None
                 best_score = (0, 0)
-                for chunk in c.execute(
-                    "select location,text,method from chunks where doc_id=? and method='vision-title' order by rowid",
-                    (doc_id,),
-                ):
-                    chunk_text = clean(chunk['text'])
+                for chunk in doc_chunks:
+                    if chunk['method'] != 'vision-title':
+                        continue
+                    chunk_text = chunk['text_clean']
                     title_numbers = {
                         DRAWING_SPACED_NUMBER.sub(r'\1\2', number)
                         for number in DRAWING_TITLE_NUMBER.findall(chunk_text)
@@ -567,15 +645,16 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                     if best_score == (len(drawing_numbers), len(patterns)):
                         priority_ids.add(doc_id)
             if qc_title_patterns and r['extension'] == '.pdf' and r['status'] == 'partial' and re.search(r'(?<![a-z0-9])qc(?![a-z0-9])', path):
-                for chunk in c.execute("select location,text,method from chunks where doc_id=? and method='vision-title' order by rowid", (doc_id,)):
-                    if all(pattern.search(clean(chunk['text'])) for pattern in qc_title_patterns):
+                for chunk in doc_chunks:
+                    if chunk['method'] != 'vision-title':
+                        continue
+                    if all(pattern.search(chunk['text_clean']) for pattern in qc_title_patterns):
                         drawing_chunks[doc_id] = chunk
                         priority_ids.add(doc_id)
                         break
             if not record and context_patterns and all(pattern.search(body) for pattern in context_patterns):
-                chunks = c.execute('select location,text,method from chunks where doc_id=? order by rowid', (doc_id,))
-                for chunk in chunks:
-                    chunk_text = clean(chunk['text'])
+                for chunk in doc_chunks:
+                    chunk_text = chunk['text_clean']
                     if all(pattern.search(chunk_text) for pattern in context_patterns):
                         context_chunks[doc_id] = chunk
                         break
@@ -599,7 +678,7 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         hits.sort(key=lambda x: (x['id'] not in priority_ids, -x['score'], x['path']) if drawing_numbers or qc_title_patterns
                   else (-x['score'], x['path']))
 
-    hits = group_related(c, hits)
+    hits = group_related(None, hits)
     facets = compute_facets(hits, active_folder=folder_clean)
 
     all_snippet_patterns = patterns + [re.compile(re.escape(ph)) for ph in phrases] + [
@@ -628,7 +707,7 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
             original['original_available'] = original['extension'] in ORIGINAL_EXTENSIONS
         if h.get('method') == 'record':
             continue
-        chunks = c.execute('select location,text,method from chunks where doc_id=?', (h['id'],)).fetchall()
+        chunks = chunks_by_doc.get(h['id'], ())
         if h.get('period_label'):
             for chunk in chunks:
                 if chunk['location'].strip().startswith('보고자료') and '장비 고장 통계' in chunk['text']:
@@ -639,7 +718,7 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         matching = []
         row_length_patterns = length_patterns.values() if h['id'] in split_length_rows else ()
         for chunk in chunks:
-            chunk_text = clean(chunk['text'])
+            chunk_text = chunk['text_clean']
             positions = [match.start() for pattern in all_snippet_patterns if (match := pattern.search(chunk_text))]
             length_positions = [match.start() for pattern in row_length_patterns if (match := pattern.search(chunk_text))]
             if positions:
@@ -647,9 +726,9 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         if matching:
             drawing = drawing_chunks.get(h['id'])
             context = drawing or context_chunks.get(h['id'])
-            context_match = next((match for match in matching if match[3] == context), None)
+            context_match = next((match for match in matching if match[3] is context), None) if context is not None else None
             _, length_count, pos, best = context_match or max(matching, key=lambda match: (match[1], match[0]))
-            loc, text, method = best
+            loc, text, method = best['location'], best['text'], best['method']
             snippet = text[max(0, pos - 70):pos + 450]
             if drawing and drawing_numbers:
                 h['evidence_label'] = '표제란의 도면 번호 일치'
@@ -680,7 +759,6 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
     )
 
     outside_folder_total = len(outside_matched_ids)
-    c.close()
     return {
         'total': len(hits),
         'outside_folder_total': outside_folder_total,
@@ -731,6 +809,9 @@ def run_scan_once():
     try:
         if ROOT.is_dir():
             scan()
+            with _CATALOG_LOCK:
+                _CATALOG_CACHE['checked_at'] = 0.0
+            get_mail_cache(force_check=True)
         else:
             c = connect()
             state(c, 'scan_running', '0')
@@ -1083,6 +1164,7 @@ def warm_cache():
     try:
         c = connect()
         get_catalog_cache(c)
+        group_related(c, [])
         c.close()
     except Exception:
         pass

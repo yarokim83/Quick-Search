@@ -2,13 +2,14 @@
 
 import json
 import threading
+import time
 from pathlib import Path
 
-from catalog import BASE, ROOT
+from catalog import BASE, ROOT, connect
 
 MTIME_TOLERANCE_NS = 2_000_000
 _CACHE_LOCK = threading.Lock()
-_CACHE = {'sig': None, 'groups_by_path': {}}
+_CACHE = {'sig': None, 'checked_at': 0.0, 'groups_by_path': {}}
 
 
 def mtime_matches(actual_ns, expected_ns):
@@ -17,31 +18,44 @@ def mtime_matches(actual_ns, expected_ns):
 
 
 def _load_groups_by_path(connection):
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        if _CACHE['sig'] is not None and (now - _CACHE['checked_at']) < 2.0:
+            return _CACHE['groups_by_path']
+
     config = BASE / 'related_documents.json'
     if not config.is_file():
         return {}
 
-    cfg_stat = config.stat()
-    doc_cnt = connection.execute('select count(*) from docs where present=1').fetchone()[0]
-    last_scan_row = connection.execute("select value from state where key='last_scan'").fetchone()
-    sig = (cfg_stat.st_mtime_ns, cfg_stat.st_size, doc_cnt, last_scan_row[0] if last_scan_row else '')
+    own_conn = connection is None
+    if own_conn:
+        connection = connect()
+    try:
+        cfg_stat = config.stat()
+        doc_cnt = connection.execute('select count(*) from docs where present=1').fetchone()[0]
+        sig = (cfg_stat.st_mtime_ns, cfg_stat.st_size, doc_cnt)
 
-    with _CACHE_LOCK:
-        if _CACHE['sig'] == sig:
-            return _CACHE['groups_by_path']
+        with _CACHE_LOCK:
+            if _CACHE['sig'] == sig:
+                _CACHE['checked_at'] = now
+                return _CACHE['groups_by_path']
 
-    groups_by_path = {}
-    for group in json.loads(config.read_text(encoding='utf-8')):
-        originals = verified_originals(connection, group['members'])
-        if originals:
-            relation = {'title': group['title'], 'proof': group['proof'], 'originals': originals}
-            for original in originals:
-                groups_by_path[original['path']] = relation
+        groups_by_path = {}
+        for group in json.loads(config.read_text(encoding='utf-8')):
+            originals = verified_originals(connection, group['members'])
+            if originals:
+                relation = {'title': group['title'], 'proof': group['proof'], 'originals': originals}
+                for original in originals:
+                    groups_by_path[original['path']] = relation
 
-    with _CACHE_LOCK:
-        _CACHE['sig'] = sig
-        _CACHE['groups_by_path'] = groups_by_path
-    return groups_by_path
+        with _CACHE_LOCK:
+            _CACHE['sig'] = sig
+            _CACHE['checked_at'] = time.monotonic()
+            _CACHE['groups_by_path'] = groups_by_path
+        return groups_by_path
+    finally:
+        if own_conn:
+            connection.close()
 
 
 def group_related(connection, hits):

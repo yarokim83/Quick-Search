@@ -111,6 +111,10 @@ def _sync_mail_db(html_path, sig):
 
 def _build_mail_entry(r):
     atts = json.loads(r['attachments_json']) if r['attachments_json'] else []
+    attachments_ui = [
+        {'index': i, 'name': a.get('name', ''), 'ext': Path(a.get('name', '')).suffix.lower()}
+        for i, a in enumerate(atts)
+    ]
     year = r['year'] or '미확인'
     subject = r['subject'] or '(제목 없음)'
     sender = r['sender'] or ''
@@ -124,6 +128,7 @@ def _build_mail_entry(r):
         'kind': 'mail',
         'year': year,
         'path': f"메일보관/{year}/{subject}",
+        'top_folder': '메일보관',
         'subject': subject,
         'sender': sender,
         'date': r['date'] or '',
@@ -131,10 +136,12 @@ def _build_mail_entry(r):
         'body_rel': r['body_rel'] or '',
         'body_text': body_text,
         'attachments': atts,
-        'att_exts': frozenset(Path(a['name']).suffix.lower() for a in atts if a.get('name')),
+        'attachments_ui': attachments_ui,
+        'att_exts': frozenset(a['ext'] for a in attachments_ui if a['ext']),
         'category': '메일자료',
         'extension': '.mail',
         'status': 'ready',
+        'status_label': f'메일 자료 · 첨부 {len(atts)}개' if atts else '메일 자료',
         'size': len(body_text.encode('utf-8')),
         'mtime': int(r['mtime'] or 0),
         'name_clean': clean(subject),
@@ -145,22 +152,57 @@ def _build_mail_entry(r):
     }
 
 
-def get_mail_cache():
-    """Return cached archived mail records and id map, or ([], {}) when archive is absent."""
-    html_path = MAIL_ROOT / '메일검색.html'
+def _load_mail_rows_from_local_db():
+    if not MAIL_DB.is_file():
+        return None, None
+    c = _connect_mail_db()
     try:
-        if not html_path.is_file():
-            return [], {}
-        st = html_path.stat()
-    except OSError:
-        return [], {}
+        has_meta = c.execute("select 1 from sqlite_master where type='table' and name='meta'").fetchone()
+        has_mails = c.execute("select 1 from sqlite_master where type='table' and name='mails'").fetchone()
+        if not has_meta or not has_mails:
+            return None, None
+        meta = {r['key']: r['value'] for r in c.execute('select key, value from meta')}
+        src_size = meta.get('source_size')
+        src_mtime = meta.get('source_mtime')
+        if src_size is None or src_mtime is None:
+            return None, None
+        rows = c.execute('select * from mails order by id').fetchall()
+        if not rows and meta.get('count') != '0':
+            return None, None
+        return (int(src_size), int(src_mtime)), rows
+    except (sqlite3.Error, ValueError):
+        return None, None
+    finally:
+        c.close()
 
-    sig = (st.st_size, st.st_mtime_ns)
+
+def get_mail_cache(force_check=False):
+    """Return cached archived mail records and id map, or ([], {}) when archive is absent."""
     with _MAIL_LOCK:
-        if _MAIL_CACHE['sig'] == sig:
+        if _MAIL_CACHE['sig'] is not None and not force_check:
             return _MAIL_CACHE['mails'], _MAIL_CACHE['by_id']
 
-    rows = _sync_mail_db(html_path, sig)
+    sig = None
+    rows = None
+    if not force_check:
+        sig, rows = _load_mail_rows_from_local_db()
+
+    if sig is None:
+        html_path = MAIL_ROOT / '메일검색.html'
+        try:
+            if not html_path.is_file():
+                return [], {}
+            st = html_path.stat()
+        except OSError:
+            return [], {}
+
+        sig = (st.st_size, st.st_mtime_ns)
+        with _MAIL_LOCK:
+            if _MAIL_CACHE['sig'] == sig:
+                return _MAIL_CACHE['mails'], _MAIL_CACHE['by_id']
+
+        rows = _sync_mail_db(html_path, sig)
+
     mails = [_build_mail_entry(r) for r in rows]
     by_id = {m['id']: m for m in mails}
 
