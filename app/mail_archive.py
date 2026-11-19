@@ -68,6 +68,12 @@ def _ensure_mail_schema(c):
             attachments_json TEXT,
             imported_at REAL
         );
+        CREATE TABLE IF NOT EXISTS imported_manifests(
+            manifest_path TEXT PRIMARY KEY,
+            size INTEGER,
+            mtime_ns INTEGER,
+            synced_at REAL
+        );
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
     ''')
 
@@ -206,48 +212,160 @@ def _load_mail_rows_from_local_db():
         c.close()
 
 
-def import_extracted_mails(records, root_dir, pst_source):
-    """Store converted PST mail records into local MAIL_DB with fingerprint deduplication and reload cache."""
-    c = _connect_mail_db()
-    _ensure_mail_schema(c)
+def _base_dedup_key(date_str, subject, sender, attachments):
+    ts_sec = _parse_iso_ns(date_str) // 1_000_000_000 if date_str else 0
+    date_key = str(ts_sec) if ts_sec > 0 else str(date_str or '').strip()
+    subj = clean(subject or '(제목 없음)').strip()
+    snd = clean(sender or '').strip()
+    att_names = tuple(sorted(
+        clean(a.get('name', '')).strip()
+        for a in (attachments or ())
+        if isinstance(a, dict) and a.get('name')
+    ))
+    return (date_key, subj, snd, att_names)
+
+
+def _load_base_dedup_keys(c):
+    has_mails = c.execute("select 1 from sqlite_master where type='table' and name='mails'").fetchone()
+    if not has_mails:
+        return set()
+    keys = set()
+    for date_s, subj, snd, atts_json in c.execute('select date, subject, sender, attachments_json from mails'):
+        try:
+            atts = json.loads(atts_json) if atts_json else ()
+        except Exception:
+            atts = ()
+        keys.add(_base_dedup_key(date_s, subj, snd, atts))
+    return keys
+
+
+def _insert_imported_records(c, records, root_dir, pst_source, base_keys=None):
     now = time.time()
     added = 0
     duplicates_skipped = 0
     root_str = str(root_dir)
     source_label = str(pst_source or '추가 PST')
+    if base_keys is None:
+        base_keys = _load_base_dedup_keys(c)
+
+    for r in records:
+        atts = r.get('attachments', [])
+        if base_keys and _base_dedup_key(r.get('date', ''), r.get('subject', ''), r.get('sender', ''), atts) in base_keys:
+            duplicates_skipped += 1
+            continue
+        fp = str(r.get('fingerprint') or '')
+        if not fp:
+            fp = f"{root_str}|{r.get('id', '')}|{r.get('subject', '')}|{r.get('date', '')}"
+        cur = c.execute(
+            '''
+            INSERT OR IGNORE INTO imported_mails(
+                fingerprint, pst_source, root_dir, mail_id, date, mtime, year,
+                subject, sender, body_rel, body_text, source, attachments_json, imported_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                fp,
+                source_label,
+                root_str,
+                str(r.get('id', '')),
+                r.get('date', ''),
+                _parse_iso_ns(r.get('date', '')),
+                str(r.get('year', '') or ''),
+                r.get('subject', '') or '(제목 없음)',
+                r.get('sender', '') or '',
+                r.get('body', '') or '',
+                r.get('bodyText', '') or '',
+                r.get('source', '') or source_label,
+                json.dumps(atts, ensure_ascii=False),
+                now,
+            ),
+        )
+        if cur.rowcount == 1:
+            added += 1
+        else:
+            duplicates_skipped += 1
+
+    manifest_path = Path(root_dir) / '검색레코드.json'
     try:
-        for r in records:
-            fp = str(r.get('fingerprint') or '')
-            if not fp:
-                fp = f"{root_str}|{r.get('id', '')}|{r.get('subject', '')}|{r.get('date', '')}"
-            cur = c.execute(
-                '''
-                INSERT OR IGNORE INTO imported_mails(
-                    fingerprint, pst_source, root_dir, mail_id, date, mtime, year,
-                    subject, sender, body_rel, body_text, source, attachments_json, imported_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    fp,
-                    source_label,
-                    root_str,
-                    str(r.get('id', '')),
-                    r.get('date', ''),
-                    _parse_iso_ns(r.get('date', '')),
-                    str(r.get('year', '') or ''),
-                    r.get('subject', '') or '(제목 없음)',
-                    r.get('sender', '') or '',
-                    r.get('body', '') or '',
-                    r.get('bodyText', '') or '',
-                    r.get('source', '') or source_label,
-                    json.dumps(r.get('attachments', []), ensure_ascii=False),
-                    now,
-                ),
+        if manifest_path.is_file():
+            st = manifest_path.stat()
+            c.execute(
+                'insert or replace into imported_manifests(manifest_path, size, mtime_ns, synced_at) values(?,?,?,?)',
+                (str(manifest_path), st.st_size, st.st_mtime_ns, now),
             )
-            if cur.rowcount == 1:
-                added += 1
-            else:
-                duplicates_skipped += 1
+    except OSError:
+        pass
+    return added, duplicates_skipped
+
+
+def sync_external_pst_manifests(c=None):
+    """Discover and import 검색레코드.json manifests under 추가메일 / PST_메일정리 / PST_메일보관."""
+    own_conn = c is None
+    if own_conn:
+        c = _connect_mail_db()
+    _ensure_mail_schema(c)
+    total_added = 0
+    try:
+        known = {
+            r['manifest_path']: (r['size'], r['mtime_ns'])
+            for r in c.execute('select manifest_path, size, mtime_ns from imported_manifests')
+        }
+        base_keys = None
+        parent_dirs = (
+            MAIL_ROOT / '추가메일',
+            ROOT / 'PST_메일정리',
+            ROOT / 'PST_메일보관',
+        )
+        for parent in parent_dirs:
+            try:
+                if not parent.is_dir():
+                    continue
+                entries = list(parent.iterdir())
+            except OSError:
+                continue
+            for sub in entries:
+                try:
+                    if not sub.is_dir():
+                        continue
+                    manifest = sub / '검색레코드.json'
+                    if not manifest.is_file():
+                        continue
+                    st = manifest.stat()
+                    mkey = str(manifest)
+                    if known.get(mkey) == (st.st_size, st.st_mtime_ns):
+                        continue
+                    records = json.loads(manifest.read_text(encoding='utf-8'))
+                    if not isinstance(records, list):
+                        continue
+                    pst_source = sub.name
+                    info_file = sub / '추가추출정보.json'
+                    if info_file.is_file():
+                        try:
+                            info = json.loads(info_file.read_text(encoding='utf-8'))
+                            if info.get('source'):
+                                pst_source = Path(info['source']).name
+                        except Exception:
+                            pass
+                    if base_keys is None:
+                        base_keys = _load_base_dedup_keys(c)
+                    added, _ = _insert_imported_records(c, records, sub, pst_source, base_keys=base_keys)
+                    total_added += added
+                except Exception:
+                    continue
+        c.execute('insert or replace into meta values(?,?)', ('manifests_bootstrapped', '1'))
+        c.commit()
+    finally:
+        if own_conn:
+            c.close()
+    return total_added
+
+
+def import_extracted_mails(records, root_dir, pst_source):
+    """Store converted PST mail records into local MAIL_DB with base-archive + fingerprint deduplication."""
+    c = _connect_mail_db()
+    _ensure_mail_schema(c)
+    try:
+        added, duplicates_skipped = _insert_imported_records(c, records, root_dir, pst_source)
         c.commit()
     finally:
         c.close()
@@ -263,6 +381,32 @@ def get_mail_cache(force_check=False):
     with _MAIL_LOCK:
         if _MAIL_CACHE['sig'] is not None and not force_check:
             return _MAIL_CACHE['mails'], _MAIL_CACHE['by_id']
+
+    if force_check:
+        try:
+            sync_external_pst_manifests()
+        except Exception:
+            pass
+    else:
+        need_bootstrap = not MAIL_DB.is_file()
+        if not need_bootstrap:
+            c = _connect_mail_db()
+            try:
+                has_meta = c.execute("select 1 from sqlite_master where type='table' and name='meta'").fetchone()
+                if has_meta:
+                    row = c.execute("select value from meta where key='manifests_bootstrapped'").fetchone()
+                    need_bootstrap = not (row and row['value'] == '1')
+                else:
+                    need_bootstrap = True
+            except sqlite3.Error:
+                need_bootstrap = False
+            finally:
+                c.close()
+        if need_bootstrap:
+            try:
+                sync_external_pst_manifests()
+            except Exception:
+                pass
 
     base_sig = None
     rows = None

@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.1] - 2026-11-19
+### Improved
+- **PST 변환 결과 자동 복원 및 중복 제거 고도화 (`app/mail_archive.py`)**:
+  - 다른 PC 설치나 캐시 초기화 시에도 `추가메일/*/검색레코드.json`, `PST_메일정리/*/검색레코드.json`, `PST_메일보관/*/검색레코드.json`을 자동 감지해 `imported_mails`로 자동 복원 (`imported_manifests` 추적)
+  - 기존 `40,360`건 보관 메일(`mails` 테이블)과 `(날짜, 제목, 발신자, 첨부파일명)` 기준 교차 중복 제거 적용
+- **PST 추출 포맷 및 첨부 메일 처리 보강 (`app/pst_worker.cjs`)**:
+  - `본문.txt` 및 검색 본문(`bodyText`)에 **`수신(To)`·`참조(CC)`** 헤더 포함
+  - 탐색기 가독성을 위해 메일 폴더명을 `<YYYYMMDD_제목요약_ID>` 형식으로 변경 (Windows 260자 경로 안전 길이 자동 조절)
+  - 전달된 첨부 메일(`EMBEDDED_MSG`, `embeddedPSTMessage`) 본문 및 내부 첨부파일 재귀 추출(최대 깊이 3) 지원
+- **변환 작업 중단 및 임시 파일 자동 정리 (`app/pst_converter.py`, `app/server.py`, `app/index.html`)**:
+  - 변환 진행 중 **`[⏹ 변환 중단]`** 버튼(`POST /api/pst/cancel`) 추가
+  - 드래그 앤 드롭 업로드용 임시 스테이징 파일(`pst_staging/*.pst`)을 변환 완료·중단·오류 시 자동 정리
+
 ## [1.5.0] - 2026-11-18
 ### Added
 - **Outlook `.pst` 파일 드래그 앤 드롭 · 탐색기 선택 자동 변환 및 통합 검색 연동 (`app/pst_converter.py`, `app/pst_worker.cjs`, `app/mail_archive.py`, `app/server.py`, `app/index.html`)**:

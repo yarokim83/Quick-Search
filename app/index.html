@@ -987,6 +987,7 @@
       <div id="pst-error-area" class="pst-box error" style="display:none;"></div>
     </div>
     <div class="modal-foot">
+      <button type="button" id="pst-cancel-job-btn" class="btn-soft" style="display:none;border-color:var(--danger);color:var(--danger);">⏹ 변환 중단</button>
       <button type="button" id="pst-cancel-btn" class="btn-soft">닫기</button>
       <button type="button" id="pst-convert-btn" class="btn-primary">🚀 자동 변환 및 검색 등록 시작</button>
     </div>
@@ -2492,6 +2493,7 @@ const pstDropStatus = document.querySelector('#pst-drop-status');
 const pstPathInput = document.querySelector('#pst-path-input');
 const pstInspectBtn = document.querySelector('#pst-inspect-btn');
 const pstConvertBtn = document.querySelector('#pst-convert-btn');
+const pstCancelJobBtn = document.querySelector('#pst-cancel-job-btn');
 const pstInspectResult = document.querySelector('#pst-inspect-result');
 const pstProgressArea = document.querySelector('#pst-progress-area');
 const pstResultArea = document.querySelector('#pst-result-area');
@@ -2743,8 +2745,16 @@ function renderPstJobStatus(st) {
   const phaseText = st.phase === 'starting' ? 'PST 파일 여는 중…'
     : st.phase === 'extracting' ? `메일·첨부파일 추출 중 (${pct}%)`
     : st.phase === 'indexing' ? '통합 검색 색인 등록 중…'
+    : st.phase === 'cancelling' ? '변환 중단 중…'
+    : st.phase === 'cancelled' ? '변환이 중단되었습니다.'
     : st.phase === 'done' ? '변환 및 검색 등록 완료 (100%)'
     : '오류 발생';
+
+  const isRunning = Boolean(st.running);
+  pstCancelJobBtn.style.display = isRunning ? 'inline-block' : 'none';
+  pstCancelJobBtn.disabled = st.phase === 'cancelling';
+  pstConvertBtn.disabled = isRunning;
+  pstInspectBtn.disabled = isRunning;
 
   const top = node('div', '', 'pst-folder-row');
   top.append(node('strong', phaseText), node('span', `${exported.toLocaleString()} / ${expected.toLocaleString()}건 · 첨부 ${Number(st.attachments || 0).toLocaleString()}개`));
@@ -2822,12 +2832,28 @@ function renderPstJobStatus(st) {
     activeSearchKey = '';
     health();
     loadTopFolders();
+  } else if (st.phase === 'cancelled') {
+    showToast('PST 변환을 중단했습니다.');
   } else if (st.phase === 'error') {
-    pstConvertBtn.disabled = false;
-    pstInspectBtn.disabled = false;
     showPstError(st.error || 'PST 변환 중 오류가 발생했습니다.');
   }
 }
+
+pstCancelJobBtn.onclick = async () => {
+  pstCancelJobBtn.disabled = true;
+  try {
+    const r = await fetch('/api/pst/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const d = await r.json();
+    if (d.status) renderPstJobStatus(d.status);
+    showToast(d.message || '변환 중단을 요청했습니다.');
+  } catch {
+    showToast('변환 중단 요청 실패');
+  }
+};
 
 function schedulePstPoll() {
   stopPstPolling();

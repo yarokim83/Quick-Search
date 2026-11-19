@@ -109,6 +109,137 @@ function inspectPst(pstPath) {
   }
 }
 
+function buildMailHeaderText(subject, senderName, sender, to, cc, dateText) {
+  const lines = [
+    `제목: ${subject || '(제목 없음)'}`,
+    `발신: ${senderName || ''} <${sender || ''}>`,
+  ];
+  if (to) lines.push(`수신: ${to}`);
+  if (cc) lines.push(`참조: ${cc}`);
+  lines.push(`날짜: ${dateText || ''}`);
+  return lines.join('\n') + '\n\n';
+}
+
+function extractAttachmentsFromMessage(msgObj, dir, outputDir, prefix, metadataAttachments, uiAttachments, report, msgId, depth = 0) {
+  const numAtt = Number(msgObj.numberOfAttachments || 0);
+  for (let i = 0; i < numAtt; i++) {
+    let a;
+    try {
+      a = msgObj.getAttachment(i);
+    } catch (attErr) {
+      const msg = attErr && attErr.message ? attErr.message : String(attErr);
+      report.warnings.push({ id: msgId, attachment: `${prefix}${i}`, error: msg });
+      metadataAttachments.push({ index: i, name: `attachment_${prefix}${i + 1}`, error: msg });
+      continue;
+    }
+
+    const origName = a.longFilename || a.filename || `attachment_${i + 1}`;
+    const entry = { index: i, name: origName, method: a.attachMethod };
+    let stream = null;
+    try {
+      stream = a.fileInputStream;
+    } catch (_) {
+      stream = null;
+    }
+
+    if (stream) {
+      const expectedBytes = Number(stream.length ? stream.length.toString() : 0);
+      const outFileName = `${prefix}${i + 1}_${safeFileName(origName, 'attachment')}`;
+      const filePath = path.join(dir, outFileName);
+      const buf = Buffer.alloc(8176);
+      const hash = crypto.createHash('sha256');
+      let total = 0;
+      let fd = null;
+      try {
+        fd = fs.openSync(filePath, 'wx');
+        while (total < expectedBytes) {
+          const n = stream.read(buf);
+          if (n <= 0) break;
+          fs.writeSync(fd, buf, 0, n);
+          hash.update(buf.subarray(0, n));
+          total += n;
+        }
+        fs.closeSync(fd);
+        fd = null;
+        if (expectedBytes > 0 && total !== expectedBytes) {
+          throw new Error(`첨부 길이 불일치 (${total}/${expectedBytes})`);
+        }
+        entry.expectedBytes = expectedBytes;
+        entry.savedBytes = total;
+        entry.sha256 = hash.digest('hex');
+        entry.savedName = outFileName;
+        report.attachments++;
+        report.attachmentBytes += total;
+        uiAttachments.push({ name: origName, url: toRelUrl(outputDir, filePath) });
+      } catch (ioErr) {
+        if (fd !== null) {
+          try { fs.closeSync(fd); } catch (_) {}
+        }
+        try { fs.unlinkSync(filePath); } catch (_) {}
+        entry.error = ioErr && ioErr.message ? ioErr.message : String(ioErr);
+        report.warnings.push({ id: msgId, name: origName, error: entry.error });
+      }
+      metadataAttachments.push(entry);
+      continue;
+    }
+
+    let emb = null;
+    if (depth < 3) {
+      try {
+        emb = a.embeddedPSTMessage;
+      } catch (_) {
+        emb = null;
+      }
+    }
+    if (emb) {
+      try {
+        const embSubj = emb.subject || origName || `embedded_mail_${i + 1}`;
+        const embDt = emb.messageDeliveryTime || emb.clientSubmitTime;
+        const embValidDt = embDt && !isNaN(embDt) && embDt.getFullYear() >= 1970 && embDt.getFullYear() <= 2100;
+        const embDtStr = embValidDt ? embDt.toISOString() : String(embDt || '');
+        const embBodyRaw = emb.body || '';
+        const embHtml = emb.bodyHTML || '';
+        const embBody = embBodyRaw.trim() ? embBodyRaw : (embHtml ? htmlText(embHtml) : '');
+        const embText = buildMailHeaderText(
+          embSubj,
+          emb.senderName || '',
+          emb.senderEmailAddress || '',
+          emb.displayTo || '',
+          emb.displayCC || '',
+          embDtStr
+        ) + embBody;
+        const outFileName = `${prefix}${i + 1}_${safeFileName(embSubj + '.txt', 'embedded_mail.txt')}`;
+        const filePath = path.join(dir, outFileName);
+        const dataBuf = Buffer.from(embText, 'utf8');
+        fs.writeFileSync(filePath, dataBuf);
+        entry.name = `[첨부메일] ${embSubj}.txt`;
+        entry.embedded = true;
+        entry.expectedBytes = dataBuf.length;
+        entry.savedBytes = dataBuf.length;
+        entry.sha256 = sha256(dataBuf);
+        entry.savedName = outFileName;
+        report.attachments++;
+        report.attachmentBytes += dataBuf.length;
+        uiAttachments.push({ name: entry.name, url: toRelUrl(outputDir, filePath) });
+        metadataAttachments.push(entry);
+
+        if (Number(emb.numberOfAttachments || 0) > 0) {
+          extractAttachmentsFromMessage(emb, dir, outputDir, `${prefix}${i + 1}_`, metadataAttachments, uiAttachments, report, msgId, depth + 1);
+        }
+      } catch (embErr) {
+        entry.error = embErr && embErr.message ? embErr.message : String(embErr);
+        report.warnings.push({ id: msgId, name: origName, error: entry.error });
+        metadataAttachments.push(entry);
+      }
+      continue;
+    }
+
+    entry.error = '첨부 스트림 없음 (임베디드/인라인 항목)';
+    report.warnings.push({ id: msgId, name: origName, error: entry.error });
+    metadataAttachments.push(entry);
+  }
+}
+
 function convertPst(pstPath, outputDir, sourceLabel, limit = 0) {
   const realPath = fs.realpathSync(pstPath);
   const before = fs.statSync(realPath);
@@ -185,8 +316,23 @@ function convertPst(pstPath, outputDir, sourceLabel, limit = 0) {
             const validDate = rawDt && !isNaN(rawDt) && rawDt.getFullYear() >= 1970 && rawDt.getFullYear() <= 2100;
             const dtIso = validDate ? rawDt.toISOString() : '';
             const year = validDate ? String(rawDt.getFullYear()) : '날짜미확인';
+            const subject = m.subject || '(제목 없음)';
+            const datePrefix = validDate
+              ? `${rawDt.getFullYear()}${String(rawDt.getMonth() + 1).padStart(2, '0')}${String(rawDt.getDate()).padStart(2, '0')}`
+              : '날짜미상';
+            const safeSubj = safeName(subject, '제목없음').slice(0, 34).replace(/[. ]+$/g, '');
+            const safeId = safeName(id, 'msg');
+            const baseParent = path.join(outputDir, year, safeFolder);
+            const maxLeafLen = Math.max(18, Math.min(60, 175 - baseParent.length));
+            let folderLeaf = `${datePrefix}_${safeSubj}_${safeId}`;
+            if (folderLeaf.length > maxLeafLen) {
+              const budget = Math.max(0, maxLeafLen - datePrefix.length - safeId.length - 2);
+              folderLeaf = budget >= 4
+                ? `${datePrefix}_${safeSubj.slice(0, budget).replace(/[. ]+$/g, '')}_${safeId}`
+                : `${datePrefix}_${safeId}`;
+            }
 
-            let dir = path.join(outputDir, year, safeFolder, safeName(id, 'msg'));
+            let dir = path.join(baseParent, folderLeaf);
             if (fs.existsSync(dir)) {
               let suffix = 2;
               while (fs.existsSync(`${dir}_${suffix}`)) suffix++;
@@ -194,7 +340,6 @@ function convertPst(pstPath, outputDir, sourceLabel, limit = 0) {
             }
             fs.mkdirSync(dir, { recursive: true });
 
-            const subject = m.subject || '(제목 없음)';
             const sender = m.senderEmailAddress || '';
             const senderName = m.senderName || '';
             const metadata = {
@@ -213,7 +358,14 @@ function convertPst(pstPath, outputDir, sourceLabel, limit = 0) {
 
             const body = m.body || '';
             const html = m.bodyHTML || '';
-            const headerText = `제목: ${subject}\n발신: ${senderName} <${sender}>\n날짜: ${dtIso || String(rawDt || '')}\n\n`;
+            const headerText = buildMailHeaderText(
+              subject,
+              senderName,
+              sender,
+              metadata.to,
+              metadata.cc,
+              dtIso || String(rawDt || '')
+            );
             const bodyFileText = headerText + body;
             const bodyPath = path.join(dir, '본문.txt');
             fs.writeFileSync(bodyPath, bodyFileText, 'utf8');
@@ -223,71 +375,8 @@ function convertPst(pstPath, outputDir, sourceLabel, limit = 0) {
               fs.writeFileSync(htmlPath, html, 'utf8');
             }
 
-            const numAtt = Number(m.numberOfAttachments || 0);
             const uiAttachments = [];
-            for (let i = 0; i < numAtt; i++) {
-              let a;
-              try {
-                a = m.getAttachment(i);
-              } catch (attErr) {
-                const msg = attErr && attErr.message ? attErr.message : String(attErr);
-                report.warnings.push({ id, attachment: i, error: msg });
-                metadata.attachments.push({ index: i, name: `attachment_${i + 1}`, error: msg });
-                continue;
-              }
-              const origName = a.longFilename || a.filename || `attachment_${i + 1}`;
-              const entry = { index: i, name: origName, method: a.attachMethod };
-              let stream = null;
-              try {
-                stream = a.fileInputStream;
-              } catch (sErr) {
-                stream = null;
-              }
-              if (!stream) {
-                entry.error = '첨부 스트림 없음 (임베디드/인라인 항목)';
-                report.warnings.push({ id, name: origName, error: entry.error });
-                metadata.attachments.push(entry);
-                continue;
-              }
-
-              const expectedBytes = Number(stream.length ? stream.length.toString() : 0);
-              const outFileName = `${i + 1}_${safeFileName(origName, 'attachment')}`;
-              const filePath = path.join(dir, outFileName);
-              const buf = Buffer.alloc(8176);
-              const hash = crypto.createHash('sha256');
-              let total = 0;
-              let fd = null;
-              try {
-                fd = fs.openSync(filePath, 'wx');
-                while (total < expectedBytes) {
-                  const n = stream.read(buf);
-                  if (n <= 0) break;
-                  fs.writeSync(fd, buf, 0, n);
-                  hash.update(buf.subarray(0, n));
-                  total += n;
-                }
-                fs.closeSync(fd);
-                fd = null;
-                if (expectedBytes > 0 && total !== expectedBytes) {
-                  throw new Error(`첨부 길이 불일치 (${total}/${expectedBytes})`);
-                }
-                entry.expectedBytes = expectedBytes;
-                entry.savedBytes = total;
-                entry.sha256 = hash.digest('hex');
-                entry.savedName = outFileName;
-                report.attachments++;
-                report.attachmentBytes += total;
-                uiAttachments.push({ name: origName, url: toRelUrl(outputDir, filePath) });
-              } catch (ioErr) {
-                if (fd !== null) {
-                  try { fs.closeSync(fd); } catch (_) {}
-                }
-                try { fs.unlinkSync(filePath); } catch (_) {}
-                entry.error = ioErr && ioErr.message ? ioErr.message : String(ioErr);
-                report.warnings.push({ id, name: origName, error: entry.error });
-              }
-              metadata.attachments.push(entry);
-            }
+            extractAttachmentsFromMessage(m, dir, outputDir, '', metadata.attachments, uiAttachments, report, id, 0);
 
             fs.writeFileSync(path.join(dir, '메일정보.json'), JSON.stringify(metadata, null, 2), 'utf8');
 

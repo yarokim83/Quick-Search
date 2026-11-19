@@ -20,6 +20,8 @@ WORKER_SCRIPT = BASE / 'pst_worker.cjs'
 CREATE_NO_WINDOW = 0x08000000 if os.name == 'nt' else 0
 
 _JOB_LOCK = threading.Lock()
+_ACTIVE_PROC = None
+_CANCEL_EVENT = threading.Event()
 _JOB_STATE = {
     'running': False,
     'phase': 'idle',
@@ -297,6 +299,41 @@ def _choose_output_dir(pst_path, target_mode):
     return ROOT / 'PST_메일보관' / folder_name
 
 
+def _cleanup_if_staged(pst_path):
+    """Remove temporary staged .pst copy in STAGING_DIR after conversion finishes or cancels."""
+    try:
+        resolved = Path(pst_path).resolve()
+        staging_resolved = STAGING_DIR.resolve()
+        if resolved.is_relative_to(staging_resolved) and resolved.is_file():
+            resolved.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def cancel_conversion():
+    """Cancel an in-progress PST conversion job."""
+    global _ACTIVE_PROC
+    with _JOB_LOCK:
+        if not _JOB_STATE['running']:
+            return {'ok': False, 'message': '현재 진행 중인 PST 변환 작업이 없습니다.', 'status': dict(_JOB_STATE)}
+        _CANCEL_EVENT.set()
+        proc = _ACTIVE_PROC
+        _JOB_STATE['phase'] = 'cancelling'
+        _JOB_STATE['current_folder'] = '변환 중단 중…'
+        _JOB_STATE['current_subject'] = ''
+
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        except OSError:
+            pass
+    return {'ok': True, 'message': 'PST 변환 중단을 요청했습니다.', 'status': get_job_status()}
+
+
 def start_conversion(pst_path, target_mode='mail_archive', on_complete=None):
     """Start background PST extraction & search indexing; reject concurrent runs."""
     p = _validate_pst_path(pst_path)
@@ -308,6 +345,7 @@ def start_conversion(pst_path, target_mode='mail_archive', on_complete=None):
     with _JOB_LOCK:
         if _JOB_STATE['running']:
             raise RuntimeError('이미 다른 PST 변환 작업이 진행 중입니다.')
+        _CANCEL_EVENT.clear()
         _JOB_STATE.update({
             'running': True,
             'phase': 'starting',
@@ -333,6 +371,7 @@ def start_conversion(pst_path, target_mode='mail_archive', on_complete=None):
         })
 
     def _run():
+        global _ACTIVE_PROC
         result_data = None
         proc = None
         try:
@@ -346,8 +385,12 @@ def start_conversion(pst_path, target_mode='mail_archive', on_complete=None):
                 bufsize=1,
                 creationflags=CREATE_NO_WINDOW,
             )
+            with _JOB_LOCK:
+                _ACTIVE_PROC = proc
             assert proc.stdout is not None
             for raw_line in proc.stdout:
+                if _CANCEL_EVENT.is_set():
+                    break
                 line = raw_line.strip()
                 if line.startswith('PROGRESS:'):
                     try:
@@ -374,6 +417,17 @@ def start_conversion(pst_path, target_mode='mail_archive', on_complete=None):
 
             stderr_out = proc.stderr.read() if proc.stderr else ''
             rc = proc.wait()
+            if _CANCEL_EVENT.is_set():
+                with _JOB_LOCK:
+                    _JOB_STATE.update({
+                        'running': False,
+                        'phase': 'cancelled',
+                        'current_folder': '사용자 요청으로 중단됨',
+                        'current_subject': '',
+                        'finished_at': time.time(),
+                    })
+                return
+
             if rc != 0 or not result_data or not result_data.get('ok'):
                 raise RuntimeError((stderr_out or 'PST 변환 중 오류가 발생했습니다.').strip()[-600:])
 
@@ -413,13 +467,28 @@ def start_conversion(pst_path, target_mode='mail_archive', on_complete=None):
                     'finished_at': time.time(),
                 })
         except Exception as exc:
+            if _CANCEL_EVENT.is_set():
+                with _JOB_LOCK:
+                    _JOB_STATE.update({
+                        'running': False,
+                        'phase': 'cancelled',
+                        'current_folder': '사용자 요청으로 중단됨',
+                        'current_subject': '',
+                        'finished_at': time.time(),
+                    })
+            else:
+                with _JOB_LOCK:
+                    _JOB_STATE.update({
+                        'running': False,
+                        'phase': 'error',
+                        'error': str(exc)[:600],
+                        'finished_at': time.time(),
+                    })
+        finally:
             with _JOB_LOCK:
-                _JOB_STATE.update({
-                    'running': False,
-                    'phase': 'error',
-                    'error': str(exc)[:600],
-                    'finished_at': time.time(),
-                })
+                if _ACTIVE_PROC is proc:
+                    _ACTIVE_PROC = None
+            _cleanup_if_staged(p)
 
     threading.Thread(target=_run, daemon=True).start()
     return get_job_status()

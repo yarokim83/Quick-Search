@@ -19,6 +19,7 @@ from pst_converter import (
     save_uploaded_pst,
     inspect_pst,
     start_conversion,
+    cancel_conversion,
     get_job_status,
     is_allowed_output_dir,
 )
@@ -988,6 +989,8 @@ class Handler(BaseHTTPRequestHandler):
                         on_complete=_on_pst_done,
                     )
                     return self.send(json.dumps({'ok': True, 'status': res}, ensure_ascii=False).encode())
+                if route == '/api/pst/cancel':
+                    return self.send(json.dumps(cancel_conversion(), ensure_ascii=False).encode())
                 if route == '/api/pst/open-output':
                     p = is_allowed_output_dir(payload.get('path', ''))
                     if p is None or '"' in str(p):
