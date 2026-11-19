@@ -2237,13 +2237,14 @@ async function runSearch(offset = 0, { live = false } = {}) {
       folder: state.folder,
       exclude_mail: state.excludeMail ? '1' : '',
       browse_all: state.browseAll ? '1' : '',
+      live: live ? '1' : '',
       offset: String(offset),
-      limit: '100',
+      limit: (live && !append) ? '50' : '100',
     });
     const r = await fetch('/api/search?' + params, { signal: searchAbort.signal });
     if (!r.ok) throw Error();
     const data = await r.json();
-    if (g !== state.generation) return;
+    if (g !== state.generation || data.cancelled) return;
 
     if (!append && !data.message) {
       if (searchCache.size >= 40) {
@@ -2286,7 +2287,7 @@ function scheduleLiveSearch() {
   if (/^[\u3131-\u318E]+$/.test(raw) && !hasAnyFilter()) return;
   const nextKey = buildSearchKey(q.value, 0);
   if (nextKey === activeSearchKey) return;
-  liveTimer = setTimeout(() => runSearch(0, { live: true }), 15);
+  liveTimer = setTimeout(() => runSearch(0, { live: true }), 30);
 }
 
 q.addEventListener('input', scheduleLiveSearch);
@@ -2412,7 +2413,7 @@ toggleSidebarBtn.onclick = () => {
 };
 closeInspBtn.onclick = closeInspector;
 helpBtn.onclick = () => helpDrawer.classList.toggle('open');
-loadMoreBtn.onclick = () => runSearch(state.offset + 100);
+loadMoreBtn.onclick = () => runSearch(state.hits.length);
 
 rescanBtn.onclick = async () => {
   rescanBtn.disabled = true;

@@ -20,7 +20,7 @@ def mtime_matches(actual_ns, expected_ns):
 def _load_groups_by_path(connection):
     now = time.monotonic()
     with _CACHE_LOCK:
-        if _CACHE['sig'] is not None and (now - _CACHE['checked_at']) < 2.0:
+        if _CACHE['sig'] is not None and (now - _CACHE['checked_at']) < 30.0:
             return _CACHE['groups_by_path']
 
     config = BASE / 'related_documents.json'

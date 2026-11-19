@@ -12,7 +12,14 @@ if APP_DIR not in sys.path:
 from catalog import BASE, DB, ROOT, connect, clean, grams, init, scan, seed, process, state, norm, category
 from evidence import has_date, record_query, record_evidence, report_period, parse_report_query
 from related import group_related
-from mail_archive import get_mail_cache, get_mail_by_id, resolve_mail_target_path, mail_snippet
+from mail_archive import (
+    build_bigram_index,
+    get_mail_cache,
+    get_mail_cache_with_index,
+    get_mail_by_id,
+    resolve_mail_target_path,
+    mail_snippet,
+)
 from pst_converter import (
     pick_pst_file,
     resolve_dropped_pst,
@@ -54,8 +61,14 @@ ORIGINAL_EXTENSIONS = frozenset((
 OPEN_LOCAL_EXTENSIONS = ORIGINAL_EXTENSIONS | frozenset(('.msg', '.eml', '.csv', '.md', '.json'))
 FOLDER_ID_OFFSET = 10_000_000
 scan_lock = threading.Lock()
+_LIVE_SEQ_LOCK = threading.Lock()
+_LIVE_SEARCH_SEQ = 0
 _CATALOG_LOCK = threading.Lock()
-_CATALOG_CACHE = {'sig': None, 'checked_at': 0.0, 'docs': [], 'aliases': [], 'folders': [], 'chunks_by_doc': {}}
+_CATALOG_CACHE = {
+    'sig': None, 'checked_at': 0.0,
+    'docs': [], 'aliases': [], 'folders': [], 'chunks_by_doc': {},
+    'docs_bidx': None, 'aliases_bidx': None, 'folders_bidx': None,
+}
 
 QC_PREFIX = r'(?<![a-z0-9])q/?c[ \t]*[-‐‑–]?[ \t]*'
 QC_NUMBER = re.compile(QC_PREFIX + r'([0-9]{3})(?![a-z0-9])(?:호기?)?')
@@ -121,27 +134,60 @@ def _build_folder_entry(row):
     }
 
 
-def get_catalog_cache(c=None, force=False):
-    """Return normalized in-memory document, alias, folder, and chunk caches, rebuilding on DB change."""
+def _narrow_rows_by_bigrams(rows, bidx, bigrams):
+    """Narrow candidate rows using a 2-gram inverted index; 100% sound for all substrings of text_all."""
+    if not rows or bidx is None or not bigrams:
+        return rows
+    lists = []
+    for bg in bigrams:
+        arr = bidx.get(bg)
+        if not arr:
+            return ()
+        lists.append(arr)
+    lists.sort(key=len)
+    if len(lists) == 1:
+        first = lists[0]
+        if len(first) * 4 >= len(rows) * 3:
+            return rows
+        return [rows[i] for i in first]
+    cand = set(lists[0])
+    for arr in lists[1:5]:
+        cand.intersection_update(arr)
+        if not cand:
+            return ()
+    return [rows[i] for i in sorted(cand)]
+
+
+def get_catalog_cache_with_index(c=None, force=False):
+    """Return normalized in-memory document, alias, folder, chunk, and bigram caches, rebuilding on DB change."""
     now = time.monotonic()
     with _CATALOG_LOCK:
-        if not force and _CATALOG_CACHE['sig'] is not None and (now - _CATALOG_CACHE['checked_at']) < 1.5:
+        if not force and _CATALOG_CACHE['sig'] is not None and (now - _CATALOG_CACHE['checked_at']) < 30.0:
             return (
                 _CATALOG_CACHE['docs'],
                 _CATALOG_CACHE['aliases'],
                 _CATALOG_CACHE['folders'],
                 _CATALOG_CACHE['chunks_by_doc'],
+                _CATALOG_CACHE['docs_bidx'],
+                _CATALOG_CACHE['aliases_bidx'],
+                _CATALOG_CACHE['folders_bidx'],
             )
 
     own_conn = c is None
     if own_conn:
         c = connect()
     try:
-        cnt, max_idx = c.execute('select count(*), coalesce(max(indexed_at), 0) from docs where present=1').fetchone()
+        cnt, max_idx, max_doc_id = c.execute(
+            'select count(*), coalesce(max(indexed_at), 0), coalesce(max(id), 0) from docs where present=1'
+        ).fetchone()
         has_folders_tbl = bool(c.execute("select 1 from sqlite_master where type='table' and name='folders'").fetchone())
-        folder_cnt = c.execute('select count(*) from folders where present=1').fetchone()[0] if has_folders_tbl else 0
-        last_scan_row = c.execute("select value from state where key='last_scan'").fetchone()
-        sig = (cnt, max_idx, folder_cnt, last_scan_row[0] if last_scan_row else '')
+        if has_folders_tbl:
+            folder_cnt, max_folder_id = c.execute(
+                'select count(*), coalesce(max(id), 0) from folders where present=1'
+            ).fetchone()
+        else:
+            folder_cnt, max_folder_id = 0, 0
+        sig = (cnt, max_idx, max_doc_id, folder_cnt, max_folder_id)
 
         with _CATALOG_LOCK:
             if not force and _CATALOG_CACHE['sig'] == sig:
@@ -151,6 +197,9 @@ def get_catalog_cache(c=None, force=False):
                     _CATALOG_CACHE['aliases'],
                     _CATALOG_CACHE['folders'],
                     _CATALOG_CACHE['chunks_by_doc'],
+                    _CATALOG_CACHE['docs_bidx'],
+                    _CATALOG_CACHE['aliases_bidx'],
+                    _CATALOG_CACHE['folders_bidx'],
                 )
 
         docs = [
@@ -179,6 +228,10 @@ def get_catalog_cache(c=None, force=False):
                 'text_clean': clean(text),
             })
 
+        docs_bidx = build_bigram_index(docs)
+        aliases_bidx = build_bigram_index(aliases)
+        folders_bidx = build_bigram_index(folders)
+
         with _CATALOG_LOCK:
             _CATALOG_CACHE['sig'] = sig
             _CATALOG_CACHE['checked_at'] = time.monotonic()
@@ -186,10 +239,19 @@ def get_catalog_cache(c=None, force=False):
             _CATALOG_CACHE['aliases'] = aliases
             _CATALOG_CACHE['folders'] = folders
             _CATALOG_CACHE['chunks_by_doc'] = chunks_by_doc
-        return docs, aliases, folders, chunks_by_doc
+            _CATALOG_CACHE['docs_bidx'] = docs_bidx
+            _CATALOG_CACHE['aliases_bidx'] = aliases_bidx
+            _CATALOG_CACHE['folders_bidx'] = folders_bidx
+        return docs, aliases, folders, chunks_by_doc, docs_bidx, aliases_bidx, folders_bidx
     finally:
         if own_conn:
             c.close()
+
+
+def get_catalog_cache(c=None, force=False):
+    """Return normalized in-memory document, alias, folder, and chunk caches."""
+    docs, aliases, folders, chunks_by_doc, _, _, _ = get_catalog_cache_with_index(c=c, force=force)
+    return docs, aliases, folders, chunks_by_doc
 
 
 def search_terms(query):
@@ -405,7 +467,7 @@ def compute_facets(hits, active_folder=''):
     }
 
 
-def find(query='', category='', scope='all', ext_filter='', sort_by='score', folder='', offset=0, limit=DEFAULT_LIMIT, exclude_mail=False):
+def find(query='', category='', scope='all', ext_filter='', sort_by='score', folder='', offset=0, limit=DEFAULT_LIMIT, exclude_mail=False, live_seq=0):
     parsed = parse_advanced_query(query)
     if '메일보관/' in parsed['excludes']:
         exclude_mail = True
@@ -502,10 +564,42 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
 
     has_query = bool(terms or parsed['phrases'] or parsed['or_groups'])
 
-    docs_cache, aliases_cache, folders_cache, chunks_by_doc = get_catalog_cache() if need_docs else ([], [], [], {})
-    mails_cache, mail_by_id = get_mail_cache() if need_mails else ([], {})
-    doc_rows = (docs_cache if scope == 'body' else chain(docs_cache, aliases_cache, folders_cache)) if need_docs else ()
-    mail_rows = mails_cache if need_mails else ()
+    query_bigrams = []
+    seen_bg = set()
+    for s in chain(required_substrs, phrases):
+        if len(s) >= 2:
+            for j in range(len(s) - 1):
+                bg = s[j:j + 2]
+                if bg not in seen_bg:
+                    seen_bg.add(bg)
+                    query_bigrams.append(bg)
+
+    if live_seq and live_seq != _LIVE_SEARCH_SEQ:
+        return None
+
+    if need_docs:
+        docs_cache, aliases_cache, folders_cache, chunks_by_doc, docs_bidx, aliases_bidx, folders_bidx = get_catalog_cache_with_index()
+        if query_bigrams:
+            docs_cand = _narrow_rows_by_bigrams(docs_cache, docs_bidx, query_bigrams)
+            if scope == 'body':
+                doc_rows = docs_cand
+            else:
+                aliases_cand = _narrow_rows_by_bigrams(aliases_cache, aliases_bidx, query_bigrams)
+                folders_cand = _narrow_rows_by_bigrams(folders_cache, folders_bidx, query_bigrams)
+                doc_rows = chain(docs_cand, aliases_cand, folders_cand)
+        else:
+            doc_rows = docs_cache if scope == 'body' else chain(docs_cache, aliases_cache, folders_cache)
+    else:
+        chunks_by_doc = {}
+        doc_rows = ()
+
+    if need_mails:
+        mails_cache, mail_by_id, mail_bidx = get_mail_cache_with_index()
+        mail_rows = _narrow_rows_by_bigrams(mails_cache, mail_bidx, query_bigrams) if query_bigrams else mails_cache
+    else:
+        mail_by_id = {}
+        mail_rows = ()
+
     rows = chain(doc_rows, mail_rows)
 
     hits = []
@@ -518,7 +612,12 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
     score_substrs = substr_terms + phrases + [alt for grp in or_groups for alt in grp]
     sc0 = score_substrs[0] if len(score_substrs) == 1 else None
 
+    iter_count = 0
     for r in rows:
+        if live_seq:
+            iter_count += 1
+            if (iter_count & 1023) == 0 and live_seq != _LIVE_SEARCH_SEQ:
+                return None
         doc_id = r['id']
         if doc_id in matched_ids or doc_id in outside_matched_ids:
             continue
@@ -675,6 +774,9 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         hits.append(hit)
         matched_ids.add(doc_id)
 
+    if live_seq and live_seq != _LIVE_SEARCH_SEQ:
+        return None
+
     browse_mode = not (terms or parsed['phrases'] or parsed['or_groups'])
     effective_sort = 'mtime_desc' if (browse_mode and sort_by == 'score') else sort_by
 
@@ -688,8 +790,14 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         hits.sort(key=lambda x: (x['id'] not in priority_ids, -x['score'], x['path']) if drawing_numbers or qc_title_patterns
                   else (-x['score'], x['path']))
 
+    if live_seq and live_seq != _LIVE_SEARCH_SEQ:
+        return None
     hits = group_related(None, hits)
+    if live_seq and live_seq != _LIVE_SEARCH_SEQ:
+        return None
     facets = compute_facets(hits, active_folder=folder_clean)
+    if live_seq and live_seq != _LIVE_SEARCH_SEQ:
+        return None
 
     all_snippet_patterns = patterns + [re.compile(re.escape(ph)) for ph in phrases] + [
         re.compile(re.escape(alt)) for grp in or_groups for alt in grp
@@ -821,6 +929,7 @@ def run_scan_once():
             scan()
             with _CATALOG_LOCK:
                 _CATALOG_CACHE['checked_at'] = 0.0
+            get_catalog_cache()
             get_mail_cache(force_check=True)
         else:
             c = connect()
@@ -1076,6 +1185,7 @@ class Handler(BaseHTTPRequestHandler):
                 folder = q.get('folder', [''])[0][:300]
                 exclude_mail = q.get('exclude_mail', [''])[0] in ('1', 'true', 'yes')
                 browse_all = q.get('browse_all', [''])[0] in ('1', 'true', 'yes')
+                is_live = q.get('live', [''])[0] in ('1', 'true', 'yes')
                 offset = max(0, int(q.get('offset', ['0'])[0]))
                 limit = min(MAX_LIMIT, max(10, int(q.get('limit', [str(DEFAULT_LIMIT)])[0])))
 
@@ -1092,12 +1202,19 @@ class Handler(BaseHTTPRequestHandler):
                         'message': '검색어를 입력하거나 왼쪽 폴더·필터를 선택해 주세요.',
                     }, ensure_ascii=False).encode())
 
+                global _LIVE_SEARCH_SEQ
+                with _LIVE_SEQ_LOCK:
+                    _LIVE_SEARCH_SEQ += 1
+                    my_seq = _LIVE_SEARCH_SEQ if is_live else 0
+
                 result = find(
                     query, category=category, scope=scope,
                     ext_filter=ext_filter, sort_by=sort_by,
                     folder=folder, offset=offset, limit=limit,
-                    exclude_mail=exclude_mail,
+                    exclude_mail=exclude_mail, live_seq=my_seq,
                 )
+                if result is None:
+                    return self.send(json.dumps({'cancelled': True, 'total': 0, 'hits': []}, ensure_ascii=False).encode())
                 return self.send(json.dumps(result, ensure_ascii=False).encode())
 
             if u.path in ['/api/excel-preview', '/api/excel-image']:

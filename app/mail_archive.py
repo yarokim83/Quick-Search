@@ -1,5 +1,6 @@
 """Load and index archived Outlook emails from Google Drive 메일검색.html into a fast local SQLite cache."""
 
+from array import array
 import datetime
 import json
 import os
@@ -16,7 +17,42 @@ MAIL_DB = DB.parent / 'mails_cache.sqlite'
 IMPORTED_MAIL_ID_OFFSET = 500_000
 
 _MAIL_LOCK = threading.Lock()
-_MAIL_CACHE = {'sig': None, 'mails': [], 'by_id': {}}
+_MAIL_CACHE = {'sig': None, 'mails': [], 'by_id': {}, 'bigram_idx': None, 'bigram_sig': None}
+
+
+def build_bigram_index(rows):
+    """Build a compact 2-gram inverted index (dict[str, array('I')]) over rows['text_all']."""
+    idx = {}
+    for i, r in enumerate(rows):
+        t = r['text_all']
+        n = len(t)
+        if n < 2:
+            continue
+        for bg in {t[j:j + 2] for j in range(n - 1)}:
+            arr = idx.get(bg)
+            if arr is None:
+                arr = array('I')
+                idx[bg] = arr
+            arr.append(i)
+    return idx
+
+
+def _schedule_mail_bigram_build(sig, mails):
+    with _MAIL_LOCK:
+        if _MAIL_CACHE['bigram_sig'] == sig:
+            return
+        _MAIL_CACHE['bigram_sig'] = sig
+
+    def _worker():
+        try:
+            bidx = build_bigram_index(mails)
+        except Exception:
+            return
+        with _MAIL_LOCK:
+            if _MAIL_CACHE['sig'] == sig:
+                _MAIL_CACHE['bigram_idx'] = bidx
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def _parse_iso_ns(date_str):
@@ -372,6 +408,8 @@ def import_extracted_mails(records, root_dir, pst_source):
 
     with _MAIL_LOCK:
         _MAIL_CACHE['sig'] = None
+        _MAIL_CACHE['bigram_idx'] = None
+        _MAIL_CACHE['bigram_sig'] = None
     get_mail_cache(force_check=False)
     return {'added': added, 'duplicates_skipped': duplicates_skipped}
 
@@ -457,7 +495,21 @@ def get_mail_cache(force_check=False):
         _MAIL_CACHE['sig'] = full_sig
         _MAIL_CACHE['mails'] = mails
         _MAIL_CACHE['by_id'] = by_id
+        _MAIL_CACHE['bigram_idx'] = None
+        _MAIL_CACHE['bigram_sig'] = None
+    _schedule_mail_bigram_build(full_sig, mails)
     return mails, by_id
+
+
+def get_mail_cache_with_index(force_check=False):
+    """Return (mails, by_id, bigram_idx) where bigram_idx may be None while warming in background."""
+    mails, by_id = get_mail_cache(force_check=force_check)
+    with _MAIL_LOCK:
+        bidx = _MAIL_CACHE['bigram_idx'] if _MAIL_CACHE['mails'] is mails else None
+        sig = _MAIL_CACHE['sig']
+    if bidx is None and mails and sig is not None:
+        _schedule_mail_bigram_build(sig, mails)
+    return mails, by_id, bidx
 
 
 def get_mail_by_id(neg_id):
