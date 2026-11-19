@@ -97,6 +97,34 @@ class HpntStandaloneSfx
         }
     }
 
+    static void StopOldBundleServer(string bundleDir)
+    {
+        string fullPrefix = Path.GetFullPath(bundleDir).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        foreach (string procName in new[] { "HPNT_Search", "pythonw", "python" })
+        {
+            Process[] list = new Process[0];
+            try { list = Process.GetProcessesByName(procName); } catch { }
+            foreach (var proc in list)
+            {
+                try
+                {
+                    string exePath = proc.MainModule != null ? proc.MainModule.FileName : "";
+                    if (!string.IsNullOrEmpty(exePath) && exePath.StartsWith(fullPrefix, StringComparison.OrdinalIgnoreCase))
+                    {
+                        proc.Kill();
+                        proc.WaitForExit(3000);
+                    }
+                }
+                catch { }
+                finally { try { proc.Dispose(); } catch { } }
+            }
+        }
+        for (int i = 0; i < 15 && IsPortListening("127.0.0.1", 8765); i++)
+        {
+            System.Threading.Thread.Sleep(150);
+        }
+    }
+
     static string ReadZipVersion(ZipArchive archive)
     {
         var verEntry = archive.GetEntry(Prefix + "VERSION");
@@ -142,6 +170,11 @@ class HpntStandaloneSfx
             {
                 string pkgVer = ReadZipVersion(archive);
                 bool alreadyRunning = IsPortListening("127.0.0.1", 8765);
+                if (alreadyRunning && !string.IsNullOrEmpty(pkgVer) && currentVer != pkgVer)
+                {
+                    StopOldBundleServer(bundleDir);
+                    alreadyRunning = IsPortListening("127.0.0.1", 8765);
+                }
                 if (!File.Exists(bundleExe) || currentVer != pkgVer)
                 {
                     Directory.CreateDirectory(bundleDir);

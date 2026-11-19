@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.5.0] - 2026-11-18
+### Added
+- **Outlook `.pst` 파일 드래그 앤 드롭 · 탐색기 선택 자동 변환 및 통합 검색 연동 (`app/pst_converter.py`, `app/pst_worker.cjs`, `app/mail_archive.py`, `app/server.py`, `app/index.html`)**:
+  - 상단 **`📥 PST 메일 변환·추가`** 메뉴와 화면 전체 `.pst` 드래그 앤 드롭 오버레이, Windows 네이티브 파일 선택 창(`GetOpenFileNameW`) 및 로컬 파일 자동 매칭·스트리밍 업로드를 지원
+  - 경량화된 `pst-extractor` 런타임(`app/vendor/pst_node`)을 내장해 Google Drive I/O 병목 없이 폴더·메일 건수 사전 검사(`--inspect`) 및 기존 메일 보관함 포맷(`<연도>/<폴더명>/<메일ID>/본문.txt`, `HTML원문.txt`, `메일정보.json`, SHA-256 검증 첨부파일) 자동 추출(`--convert`) 제공
+  - `mails_cache.sqlite`의 `imported_mails` 테이블에 SHA-256 지문(`fingerprint`) 기반 중복 제외 후 즉시 등록되어 별도 재시작 없이 `✉️ 메일자료` 통합 검색·미리보기·첨부파일 열기 지원
+  - 변환 위치 선택(`통합 메일 보관함` 또는 `HPNT_업무\PST_메일정리` 업무 폴더), 실시간 진행률·연도별 집계 표시, 완료 후 `[📂 변환된 폴더 열기]` 및 `[🔍 변환된 메일 바로 검색]` 제공
+- **배포/동기화 스크립트 보강 (`scripts/backup_and_sync.py`, `scripts/build_windows_dist.py`)**:
+  - `pst_converter.py`, `pst_worker.cjs` 및 `app/vendor` 동기화·ZIP 무결성 검증 항목 추가
+
 ## [1.4.9] - 2026-11-18
 ### Changed
 - **백엔드 인메모리 검색 엔진 고속화 및 I/O 병목 제거 (`app/server.py`, `app/mail_archive.py`, `app/evidence.py`, `app/related.py`)**:

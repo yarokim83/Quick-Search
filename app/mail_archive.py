@@ -5,6 +5,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -12,6 +13,7 @@ from catalog import DB, ROOT, clean, norm
 
 MAIL_ROOT = Path(os.environ['HPNT_MAIL_ROOT']) if os.environ.get('HPNT_MAIL_ROOT') else ROOT.parent / '메일보관_백업_2026-10-31'
 MAIL_DB = DB.parent / 'mails_cache.sqlite'
+IMPORTED_MAIL_ID_OFFSET = 500_000
 
 _MAIL_LOCK = threading.Lock()
 _MAIL_CACHE = {'sig': None, 'mails': [], 'by_id': {}}
@@ -48,6 +50,23 @@ def _ensure_mail_schema(c):
             body_text TEXT,
             source TEXT,
             attachments_json TEXT
+        );
+        CREATE TABLE IF NOT EXISTS imported_mails(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            fingerprint TEXT UNIQUE,
+            pst_source TEXT,
+            root_dir TEXT,
+            mail_id TEXT,
+            date TEXT,
+            mtime INTEGER,
+            year TEXT,
+            subject TEXT,
+            sender TEXT,
+            body_rel TEXT,
+            body_text TEXT,
+            source TEXT,
+            attachments_json TEXT,
+            imported_at REAL
         );
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
     ''')
@@ -109,7 +128,7 @@ def _sync_mail_db(html_path, sig):
     return rows
 
 
-def _build_mail_entry(r):
+def _build_mail_entry(r, id_offset=0, default_root=None):
     atts = json.loads(r['attachments_json']) if r['attachments_json'] else []
     attachments_ui = [
         {'index': i, 'name': a.get('name', ''), 'ext': Path(a.get('name', '')).suffix.lower()}
@@ -122,13 +141,16 @@ def _build_mail_entry(r):
     att_names = ' '.join(a.get('name', '') for a in atts)
     path_clean = clean(f"메일보관/{year}/{subject} {sender} {att_names}")
     body_clean = clean(body_text) if body_text else ''
-    neg_id = -int(r['id'])
+    neg_id = -(id_offset + int(r['id']))
+    row_keys = r.keys()
+    root_dir = (r['root_dir'] if 'root_dir' in row_keys and r['root_dir'] else str(default_root or MAIL_ROOT))
     return {
         'id': neg_id,
         'kind': 'mail',
         'year': year,
         'path': f"메일보관/{year}/{subject}",
         'top_folder': '메일보관',
+        'root_dir': root_dir,
         'subject': subject,
         'sender': sender,
         'date': r['date'] or '',
@@ -152,28 +174,88 @@ def _build_mail_entry(r):
     }
 
 
+def _load_imported_rows(c):
+    has_imported = c.execute("select 1 from sqlite_master where type='table' and name='imported_mails'").fetchone()
+    if not has_imported:
+        return []
+    return c.execute('select * from imported_mails order by id').fetchall()
+
+
 def _load_mail_rows_from_local_db():
     if not MAIL_DB.is_file():
-        return None, None
+        return None, None, []
     c = _connect_mail_db()
     try:
+        imported_rows = _load_imported_rows(c)
         has_meta = c.execute("select 1 from sqlite_master where type='table' and name='meta'").fetchone()
         has_mails = c.execute("select 1 from sqlite_master where type='table' and name='mails'").fetchone()
         if not has_meta or not has_mails:
-            return None, None
+            return None, None, imported_rows
         meta = {r['key']: r['value'] for r in c.execute('select key, value from meta')}
         src_size = meta.get('source_size')
         src_mtime = meta.get('source_mtime')
         if src_size is None or src_mtime is None:
-            return None, None
+            return None, None, imported_rows
         rows = c.execute('select * from mails order by id').fetchall()
         if not rows and meta.get('count') != '0':
-            return None, None
-        return (int(src_size), int(src_mtime)), rows
+            return None, None, imported_rows
+        return (int(src_size), int(src_mtime)), rows, imported_rows
     except (sqlite3.Error, ValueError):
-        return None, None
+        return None, None, []
     finally:
         c.close()
+
+
+def import_extracted_mails(records, root_dir, pst_source):
+    """Store converted PST mail records into local MAIL_DB with fingerprint deduplication and reload cache."""
+    c = _connect_mail_db()
+    _ensure_mail_schema(c)
+    now = time.time()
+    added = 0
+    duplicates_skipped = 0
+    root_str = str(root_dir)
+    source_label = str(pst_source or '추가 PST')
+    try:
+        for r in records:
+            fp = str(r.get('fingerprint') or '')
+            if not fp:
+                fp = f"{root_str}|{r.get('id', '')}|{r.get('subject', '')}|{r.get('date', '')}"
+            cur = c.execute(
+                '''
+                INSERT OR IGNORE INTO imported_mails(
+                    fingerprint, pst_source, root_dir, mail_id, date, mtime, year,
+                    subject, sender, body_rel, body_text, source, attachments_json, imported_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    fp,
+                    source_label,
+                    root_str,
+                    str(r.get('id', '')),
+                    r.get('date', ''),
+                    _parse_iso_ns(r.get('date', '')),
+                    str(r.get('year', '') or ''),
+                    r.get('subject', '') or '(제목 없음)',
+                    r.get('sender', '') or '',
+                    r.get('body', '') or '',
+                    r.get('bodyText', '') or '',
+                    r.get('source', '') or source_label,
+                    json.dumps(r.get('attachments', []), ensure_ascii=False),
+                    now,
+                ),
+            )
+            if cur.rowcount == 1:
+                added += 1
+            else:
+                duplicates_skipped += 1
+        c.commit()
+    finally:
+        c.close()
+
+    with _MAIL_LOCK:
+        _MAIL_CACHE['sig'] = None
+    get_mail_cache(force_check=False)
+    return {'added': added, 'duplicates_skipped': duplicates_skipped}
 
 
 def get_mail_cache(force_check=False):
@@ -182,32 +264,53 @@ def get_mail_cache(force_check=False):
         if _MAIL_CACHE['sig'] is not None and not force_check:
             return _MAIL_CACHE['mails'], _MAIL_CACHE['by_id']
 
-    sig = None
+    base_sig = None
     rows = None
+    imported_rows = []
     if not force_check:
-        sig, rows = _load_mail_rows_from_local_db()
+        base_sig, rows, imported_rows = _load_mail_rows_from_local_db()
 
-    if sig is None:
+    if base_sig is None:
         html_path = MAIL_ROOT / '메일검색.html'
+        html_ok = False
         try:
-            if not html_path.is_file():
-                return [], {}
-            st = html_path.stat()
+            if html_path.is_file():
+                st = html_path.stat()
+                base_sig = (st.st_size, st.st_mtime_ns)
+                html_ok = True
         except OSError:
+            html_ok = False
+
+        if html_ok:
+            rows = _sync_mail_db(html_path, base_sig)
+            if MAIL_DB.is_file():
+                c = _connect_mail_db()
+                try:
+                    imported_rows = _load_imported_rows(c)
+                finally:
+                    c.close()
+        elif imported_rows:
+            base_sig = ('imported_only',)
+            rows = []
+        else:
             return [], {}
 
-        sig = (st.st_size, st.st_mtime_ns)
-        with _MAIL_LOCK:
-            if _MAIL_CACHE['sig'] == sig:
-                return _MAIL_CACHE['mails'], _MAIL_CACHE['by_id']
+    max_imp_id = int(imported_rows[-1]['id']) if imported_rows else 0
+    full_sig = (base_sig, len(imported_rows), max_imp_id)
+    with _MAIL_LOCK:
+        if _MAIL_CACHE['sig'] == full_sig and not force_check:
+            return _MAIL_CACHE['mails'], _MAIL_CACHE['by_id']
 
-        rows = _sync_mail_db(html_path, sig)
-
-    mails = [_build_mail_entry(r) for r in rows]
+    mails = [_build_mail_entry(r) for r in (rows or ())]
+    if imported_rows:
+        mails.extend(
+            _build_mail_entry(r, id_offset=IMPORTED_MAIL_ID_OFFSET)
+            for r in imported_rows
+        )
     by_id = {m['id']: m for m in mails}
 
     with _MAIL_LOCK:
-        _MAIL_CACHE['sig'] = sig
+        _MAIL_CACHE['sig'] = full_sig
         _MAIL_CACHE['mails'] = mails
         _MAIL_CACHE['by_id'] = by_id
     return mails, by_id
@@ -219,7 +322,7 @@ def get_mail_by_id(neg_id):
 
 
 def resolve_mail_target_path(neg_id, att_index=None):
-    """Resolve a safe path under MAIL_ROOT for either mail body.txt or a specific attachment."""
+    """Resolve a safe path under the mail entry's root_dir (or MAIL_ROOT) for body.txt or attachment."""
     m = get_mail_by_id(neg_id)
     if not m:
         return None
@@ -234,12 +337,13 @@ def resolve_mail_target_path(neg_id, att_index=None):
         return None
 
     rel = unquote(rel_enc).lstrip('/\\')
+    base_root = Path(m.get('root_dir') or MAIL_ROOT)
     try:
-        root_resolved = MAIL_ROOT.resolve()
+        root_resolved = base_root.resolve()
     except OSError:
         return None
     for cand_rel in (rel, norm(rel)):
-        cand = MAIL_ROOT / cand_rel
+        cand = base_root / cand_rel
         try:
             resolved = cand.resolve()
             if resolved.is_relative_to(root_resolved) and resolved.is_file():

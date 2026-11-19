@@ -399,6 +399,9 @@ def build_all():
             f'{PACKAGE_ROOT}/app/server.py',
             f'{PACKAGE_ROOT}/app/catalog.py',
             f'{PACKAGE_ROOT}/app/mail_archive.py',
+            f'{PACKAGE_ROOT}/app/pst_converter.py',
+            f'{PACKAGE_ROOT}/app/pst_worker.cjs',
+            f'{PACKAGE_ROOT}/app/vendor/pst_node/node_modules/pst-extractor/package.json',
             f'{PACKAGE_ROOT}/app/index.html',
         )
         missing = [r for r in required if r not in names]

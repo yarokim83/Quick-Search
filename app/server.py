@@ -13,6 +13,15 @@ from catalog import BASE, DB, ROOT, connect, clean, grams, init, scan, seed, pro
 from evidence import has_date, record_query, record_evidence, report_period, parse_report_query
 from related import group_related
 from mail_archive import get_mail_cache, get_mail_by_id, resolve_mail_target_path, mail_snippet
+from pst_converter import (
+    pick_pst_file,
+    resolve_dropped_pst,
+    save_uploaded_pst,
+    inspect_pst,
+    start_conversion,
+    get_job_status,
+    is_allowed_output_dir,
+)
 
 LABELS = {
     'ready': '본문 검색 가능',
@@ -42,7 +51,7 @@ ORIGINAL_EXTENSIONS = frozenset((
     '.avi', '.mp4', '.webm', '.dwg', '.dxf', '.zip', '.rar', '.alz', '.pptx', '.ppt',
 ))
 OPEN_LOCAL_EXTENSIONS = ORIGINAL_EXTENSIONS | frozenset(('.msg', '.eml', '.csv', '.md', '.json'))
-FOLDER_ID_OFFSET = 1_000_000
+FOLDER_ID_OFFSET = 10_000_000
 scan_lock = threading.Lock()
 _CATALOG_LOCK = threading.Lock()
 _CATALOG_CACHE = {'sig': None, 'checked_at': 0.0, 'docs': [], 'aliases': [], 'folders': [], 'chunks_by_doc': {}}
@@ -867,11 +876,14 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def parse_post_json(self):
+    def parse_post_json(self, max_len=1024):
         length = int(self.headers.get('Content-Length', '0'))
-        if not 0 < length <= 1024:
+        if not 0 < length <= max_len:
             return None
         return json.loads(self.rfile.read(length))
+
+    def send_json_error(self, message, status=400):
+        return self.send(json.dumps({'ok': False, 'error': str(message)}, ensure_ascii=False).encode(), status=status)
 
     def resolve_target_path(self, doc_id, att_index=None, allowed_exts=None):
         if doc_id <= -FOLDER_ID_OFFSET - 1:
@@ -905,11 +917,26 @@ class Handler(BaseHTTPRequestHandler):
         return p, 200
 
     def do_POST(self):
-        if not self.allowed_request():
+        if not self.allowed_request() or not self.allowed_origin():
             return self.send(b'Forbidden', status=403)
-        if not self.allowed_origin() or self.headers.get('Content-Type', '').split(';')[0].strip().lower() != 'application/json':
+        parsed_url = urlparse(self.path)
+        route = parsed_url.path
+
+        if route == '/api/pst/upload':
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                q = parse_qs(parsed_url.query)
+                filename = q.get('name', ['uploaded.pst'])[0]
+                res = save_uploaded_pst(self.rfile, length, filename)
+                return self.send(json.dumps(res, ensure_ascii=False).encode())
+            except (ValueError, OSError) as e:
+                return self.send_json_error(e, status=400)
+            except Exception as e:
+                return self.send_json_error(e, status=500)
+
+        if self.headers.get('Content-Type', '').split(';')[0].strip().lower() != 'application/json':
             return self.send(b'Forbidden', status=403)
-        route = urlparse(self.path).path
+
         if route == '/api/rescan':
             try:
                 payload = self.parse_post_json()
@@ -921,6 +948,62 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(json.dumps({'ok': False, 'started': False, 'message': '이미 목록을 확인하고 있습니다.'}, ensure_ascii=False).encode())
             threading.Thread(target=run_scan_once, daemon=True).start()
             return self.send(json.dumps({'ok': True, 'started': True, 'message': '목록 갱신을 시작했습니다.'}, ensure_ascii=False).encode())
+
+        if route.startswith('/api/pst/'):
+            try:
+                payload = self.parse_post_json(max_len=8192)
+                if payload is None:
+                    payload = {}
+                if not isinstance(payload, dict):
+                    return self.send_json_error('잘못된 요청 형식입니다.', status=400)
+            except (ValueError, json.JSONDecodeError):
+                return self.send_json_error('요청 데이터를 해석할 수 없습니다.', status=400)
+
+            try:
+                if route == '/api/pst/pick-file':
+                    return self.send(json.dumps(pick_pst_file(), ensure_ascii=False).encode())
+                if route == '/api/pst/resolve-dropped':
+                    res = resolve_dropped_pst(
+                        payload.get('name', ''),
+                        size=payload.get('size'),
+                        last_modified_ms=payload.get('last_modified'),
+                    )
+                    return self.send(json.dumps(res, ensure_ascii=False).encode())
+                if route == '/api/pst/inspect':
+                    res = inspect_pst(payload.get('path', ''))
+                    return self.send(json.dumps(res, ensure_ascii=False).encode())
+                if route == '/api/pst/convert':
+                    def _on_pst_done(_mode, out_dir):
+                        with _CATALOG_LOCK:
+                            _CATALOG_CACHE['checked_at'] = 0.0
+                        try:
+                            if Path(out_dir).resolve().is_relative_to(ROOT.resolve()):
+                                threading.Thread(target=run_scan_once, daemon=True).start()
+                        except OSError:
+                            pass
+
+                    res = start_conversion(
+                        payload.get('path', ''),
+                        target_mode=payload.get('target_mode', 'mail_archive'),
+                        on_complete=_on_pst_done,
+                    )
+                    return self.send(json.dumps({'ok': True, 'status': res}, ensure_ascii=False).encode())
+                if route == '/api/pst/open-output':
+                    p = is_allowed_output_dir(payload.get('path', ''))
+                    if p is None or '"' in str(p):
+                        return self.send_json_error('변환 출력 폴더를 찾을 수 없습니다.', status=404)
+                    if os.name != 'nt':
+                        return self.send_json_error('이 기능은 Windows PC에서 사용할 수 있습니다.', status=501)
+                    subprocess.Popen(f'explorer.exe "{p}"')
+                    return self.send(json.dumps({'ok': True}).encode())
+                return self.send(b'Not found', status=404)
+            except (ValueError, FileNotFoundError) as e:
+                return self.send_json_error(e, status=400)
+            except RuntimeError as e:
+                code = 409 if '진행 중' in str(e) else 400
+                return self.send_json_error(e, status=code)
+            except Exception as e:
+                return self.send_json_error(e, status=500)
 
         if route not in ('/api/open-local', '/api/open-folder'):
             return self.send(b'Not found', status=404)
@@ -977,6 +1060,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send((BASE / u.path.lstrip('/')).read_bytes(), 'image/png')
             if u.path == '/api/status':
                 return self.send(json.dumps(stats(), ensure_ascii=False).encode())
+            if u.path == '/api/pst/status':
+                return self.send(json.dumps(get_job_status(), ensure_ascii=False).encode())
             if u.path == '/api/folders':
                 return self.send(json.dumps({'folders': top_folders()}, ensure_ascii=False).encode())
             if u.path == '/api/search':

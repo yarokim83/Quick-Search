@@ -638,6 +638,157 @@
   }
   .toast.show { opacity: 1; transform: translateY(0); }
 
+  /* PST Converter Modal & Drag Drop */
+  #global-pst-drop-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 101, 94, 0.14);
+    border: 4px dashed var(--brand);
+    z-index: 300;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+  }
+  #global-pst-drop-overlay.show { display: flex; }
+  .global-drop-card {
+    background: var(--surface);
+    border: 2px solid var(--brand);
+    border-radius: 14px;
+    padding: 20px 30px;
+    box-shadow: 0 12px 32px rgba(15, 45, 55, 0.22);
+    text-align: center;
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--brand-dark);
+  }
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 29, 36, 0.48);
+    z-index: 250;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 14px;
+  }
+  .modal-backdrop.open { display: flex; }
+  .modal-card {
+    width: min(680px, 100%);
+    max-height: calc(100vh - 28px);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 18px 48px rgba(10, 28, 36, 0.28);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .modal-head {
+    padding: 11px 16px;
+    background: var(--surface-soft);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .modal-head h2 { margin: 0; font-size: 15px; color: var(--brand-dark); }
+  .modal-body {
+    padding: 14px 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .modal-foot {
+    padding: 10px 16px;
+    background: var(--surface-soft);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+  .pst-dropzone {
+    border: 2px dashed var(--border-strong);
+    border-radius: 10px;
+    padding: 18px 14px;
+    text-align: center;
+    background: var(--surface-soft);
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .pst-dropzone:hover, .pst-dropzone.dragover {
+    border-color: var(--brand);
+    background: var(--brand-soft);
+  }
+  .pst-path-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .pst-path-row input {
+    flex: 1;
+    min-width: 220px;
+    padding: 6px 10px;
+    font-size: 12.5px;
+  }
+  .pst-mode-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 8px;
+  }
+  .pst-mode-opt {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-soft);
+    cursor: pointer;
+    font-size: 12.5px;
+  }
+  .pst-mode-opt:has(input:checked) {
+    border-color: var(--brand);
+    background: var(--brand-soft);
+  }
+  .pst-box {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    background: var(--surface-soft);
+    font-size: 12.5px;
+  }
+  .pst-box.success { background: #eef9f2; border-color: #a9dfc0; }
+  .pst-box.error { background: #fef2f2; border-color: #fecaca; color: var(--danger); }
+  .pst-folder-list {
+    max-height: 150px;
+    overflow-y: auto;
+    margin-top: 6px;
+    border-top: 1px solid var(--border);
+    padding-top: 6px;
+  }
+  .pst-folder-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 2px 0;
+    font-size: 12px;
+  }
+  .pst-bar-track {
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    background: #dce6ea;
+    overflow: hidden;
+    margin: 7px 0;
+  }
+  .pst-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--brand);
+    transition: width 0.2s ease;
+  }
+  .pst-year-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+
   @media (max-width: 1200px) {
     .workspace { grid-template-columns: 195px 1fr; }
     .workspace.no-sidebar { grid-template-columns: 1fr; }
@@ -673,6 +824,7 @@
         <span class="pill" id="stat-sync">동기화 확인 중…</span>
       </div>
       <div class="top-actions">
+        <button type="button" id="pst-btn" class="btn-soft">📥 PST 메일 변환·추가</button>
         <button type="button" id="toggle-sidebar-btn" class="btn-soft">사이드바</button>
         <button type="button" id="rescan-btn" class="btn-soft">지금 목록 갱신</button>
         <button type="button" id="help-btn" class="btn-soft">검색 연산자·단축키</button>
@@ -786,6 +938,61 @@
     </aside>
   </div>
 </div>
+<div id="global-pst-drop-overlay" aria-hidden="true">
+  <div class="global-drop-card">📥 여기에 Outlook <code>.pst</code> 파일을 놓으면 메일 변환·추가 창이 열립니다</div>
+</div>
+
+<div id="pst-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="pst-modal-title">
+  <div class="modal-card">
+    <div class="modal-head">
+      <h2 id="pst-modal-title">📥 Outlook PST 메일 자동 변환 · 검색 추가</h2>
+      <button type="button" id="pst-close-btn" class="btn-mini">닫기 ×</button>
+    </div>
+    <div class="modal-body">
+      <div id="pst-dropzone" class="pst-dropzone" tabindex="0">
+        <div><strong>여기로 .pst 파일을 끌어다 놓거나 클릭하세요</strong></div>
+        <div class="row-sub" style="margin-top:4px;">기존 메일 보관함과 동일하게 연도별 폴더·본문·첨부파일로 변환해 검색에 즉시 반영합니다.</div>
+        <div style="margin-top:10px;display:flex;justify-content:center;gap:6px;flex-wrap:wrap;">
+          <button type="button" id="pst-pick-btn" class="btn-soft">📁 PC에서 PST 파일 선택 (탐색기)</button>
+        </div>
+        <input type="file" id="pst-file-input" accept=".pst" style="display:none">
+        <div id="pst-drop-status" class="row-sub" style="margin-top:6px;"></div>
+      </div>
+
+      <div>
+        <div class="row-sub" style="margin-bottom:4px;font-weight:600;">선택된 PST 파일 경로</div>
+        <div class="pst-path-row">
+          <input id="pst-path-input" placeholder="예: D:\백업\2025_메일.pst (탐색기 선택 또는 드래그 앤 드롭)" autocomplete="off">
+          <button type="button" id="pst-inspect-btn" class="btn-soft">🔍 폴더·건수 미리 확인</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="row-sub" style="margin-bottom:4px;font-weight:600;">변환 파일 저장 위치</div>
+        <div class="pst-mode-grid">
+          <label class="pst-mode-opt">
+            <input type="radio" name="pst-target-mode" value="mail_archive" checked>
+            <span><strong>통합 메일 보관함에 정리 (기본)</strong><br><span class="row-sub">기존 보관 메일(✉️ 메일자료)과 함께 즉시 통합 검색</span></span>
+          </label>
+          <label class="pst-mode-opt">
+            <input type="radio" name="pst-target-mode" value="work_folder">
+            <span><strong>업무 폴더(HPNT_업무\PST_메일정리)에 정리</strong><br><span class="row-sub">업무 폴더 내 연도별 폴더로 저장 + 메일 통합 검색 반영</span></span>
+          </label>
+        </div>
+      </div>
+
+      <div id="pst-inspect-result" class="pst-box" style="display:none;"></div>
+      <div id="pst-progress-area" class="pst-box" style="display:none;"></div>
+      <div id="pst-result-area" class="pst-box success" style="display:none;"></div>
+      <div id="pst-error-area" class="pst-box error" style="display:none;"></div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" id="pst-cancel-btn" class="btn-soft">닫기</button>
+      <button type="button" id="pst-convert-btn" class="btn-primary">🚀 자동 변환 및 검색 등록 시작</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script>
@@ -2200,6 +2407,7 @@ document.addEventListener('keydown', e => {
     e.preventDefault(); q.focus(); q.select(); return;
   }
   if (e.key === 'Escape') {
+    if (pstModal.classList.contains('open')) { closePstModal(); return; }
     if (document.activeElement === q && q.value) { clearBtn.click(); }
     else if (!inspector.classList.contains('hidden')) closeInspector();
     return;
@@ -2271,6 +2479,397 @@ async function health() {
     hd.textContent = parts.join(' · ') + (d.state.worker_error ? ' · 오류: ' + d.state.worker_error : '');
   } catch {}
 }
+
+/* PST Converter Modal & Drag-and-Drop */
+const pstBtn = document.querySelector('#pst-btn');
+const pstModal = document.querySelector('#pst-modal');
+const pstCloseBtn = document.querySelector('#pst-close-btn');
+const pstCancelBtn = document.querySelector('#pst-cancel-btn');
+const pstDropzone = document.querySelector('#pst-dropzone');
+const pstPickBtn = document.querySelector('#pst-pick-btn');
+const pstFileInput = document.querySelector('#pst-file-input');
+const pstDropStatus = document.querySelector('#pst-drop-status');
+const pstPathInput = document.querySelector('#pst-path-input');
+const pstInspectBtn = document.querySelector('#pst-inspect-btn');
+const pstConvertBtn = document.querySelector('#pst-convert-btn');
+const pstInspectResult = document.querySelector('#pst-inspect-result');
+const pstProgressArea = document.querySelector('#pst-progress-area');
+const pstResultArea = document.querySelector('#pst-result-area');
+const pstErrorArea = document.querySelector('#pst-error-area');
+const globalPstDropOverlay = document.querySelector('#global-pst-drop-overlay');
+
+let pstPollTimer = null;
+let globalDragDepth = 0;
+
+function showPstError(msg) {
+  pstErrorArea.textContent = msg || '작업을 처리할 수 없습니다.';
+  pstErrorArea.style.display = 'block';
+}
+function clearPstNotices() {
+  pstErrorArea.style.display = 'none';
+  pstErrorArea.textContent = '';
+  pstResultArea.style.display = 'none';
+  pstResultArea.replaceChildren();
+}
+
+function stopPstPolling() {
+  if (pstPollTimer) {
+    clearTimeout(pstPollTimer);
+    pstPollTimer = null;
+  }
+}
+
+async function openPstModal() {
+  pstModal.classList.add('open');
+  try {
+    const r = await fetch('/api/pst/status');
+    if (r.ok) {
+      const st = await r.json();
+      if (st.running) {
+        if (st.pst_path && !pstPathInput.value) pstPathInput.value = st.pst_path;
+        renderPstJobStatus(st);
+        schedulePstPoll();
+      }
+    }
+  } catch {}
+}
+
+function closePstModal() {
+  pstModal.classList.remove('open');
+  stopPstPolling();
+}
+
+pstBtn.onclick = openPstModal;
+pstCloseBtn.onclick = closePstModal;
+pstCancelBtn.onclick = closePstModal;
+pstModal.onclick = e => { if (e.target === pstModal) closePstModal(); };
+
+function uploadPstFile(file) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/pst/upload?name=' + encodeURIComponent(file.name));
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.upload.onprogress = evt => {
+      if (evt.lengthComputable) {
+        const pct = Math.min(100, Math.round((evt.loaded / evt.total) * 100));
+        pstDropStatus.textContent = `임시 작업 공간으로 복사 중… ${pct}% (${formatSize(evt.loaded)} / ${formatSize(evt.total)})`;
+      }
+    };
+    xhr.onload = () => {
+      try {
+        const data = JSON.parse(xhr.responseText || '{}');
+        if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolve(data);
+        else reject(new Error(data.error || '파일 업로드에 실패했습니다.'));
+      } catch {
+        reject(new Error('서버 응답을 처리할 수 없습니다.'));
+      }
+    };
+    xhr.onerror = () => reject(new Error('파일 전송 중 연결 오류가 발생했습니다. [📁 PC에서 PST 파일 선택] 버튼을 이용해 보세요.'));
+    xhr.send(file);
+  });
+}
+
+async function handlePstFileObject(file) {
+  if (!file) return;
+  clearPstNotices();
+  if (!file.name.toLowerCase().endsWith('.pst')) {
+    showPstError('확장자가 .pst인 Outlook 데이터 파일만 변환할 수 있습니다.');
+    return;
+  }
+  pstDropStatus.textContent = `파일 확인 중: ${file.name} (${formatSize(file.size)})`;
+  try {
+    const r = await fetch('/api/pst/resolve-dropped', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: file.name, size: file.size, last_modified: file.lastModified || 0 }),
+    });
+    const res = await r.json();
+    if (res.matched && res.path) {
+      pstPathInput.value = res.path;
+      pstDropStatus.textContent = `로컬 원본 연결 완료: ${res.name} (${formatSize(res.size)})`;
+      await inspectPstPath(res.path);
+      return;
+    }
+    pstDropStatus.textContent = `임시 작업 공간으로 복사 준비 중: ${file.name} (${formatSize(file.size)})`;
+    const up = await uploadPstFile(file);
+    pstPathInput.value = up.path;
+    pstDropStatus.textContent = `업로드 준비 완료: ${up.name} (${formatSize(up.size)})`;
+    await inspectPstPath(up.path);
+  } catch (err) {
+    pstDropStatus.textContent = '';
+    showPstError(err.message || '드롭한 PST 파일을 처리하지 못했습니다.');
+  }
+}
+
+pstDropzone.onclick = () => pstFileInput.click();
+pstDropzone.onkeydown = e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pstFileInput.click(); }
+};
+pstFileInput.onchange = () => {
+  if (pstFileInput.files && pstFileInput.files[0]) {
+    handlePstFileObject(pstFileInput.files[0]);
+    pstFileInput.value = '';
+  }
+};
+
+pstPickBtn.onclick = async e => {
+  e.stopPropagation();
+  clearPstNotices();
+  pstPickBtn.disabled = true;
+  pstDropStatus.textContent = 'Windows 파일 선택 창을 여는 중…';
+  try {
+    const r = await fetch('/api/pst/pick-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.error || '파일을 선택하지 못했습니다.');
+    if (d.cancelled) {
+      pstDropStatus.textContent = '';
+      return;
+    }
+    pstPathInput.value = d.path;
+    pstDropStatus.textContent = `선택됨: ${d.name} (${formatSize(d.size)})`;
+    await inspectPstPath(d.path);
+  } catch (err) {
+    pstDropStatus.textContent = '';
+    showPstError(err.message || '파일 선택에 실패했습니다.');
+  } finally {
+    pstPickBtn.disabled = false;
+  }
+};
+
+pstDropzone.addEventListener('dragover', e => {
+  e.preventDefault();
+  e.stopPropagation();
+  pstDropzone.classList.add('dragover');
+});
+pstDropzone.addEventListener('dragleave', e => {
+  e.stopPropagation();
+  if (!pstDropzone.contains(e.relatedTarget)) pstDropzone.classList.remove('dragover');
+});
+pstDropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  e.stopPropagation();
+  pstDropzone.classList.remove('dragover');
+  globalPstDropOverlay.classList.remove('show');
+  globalDragDepth = 0;
+  const f = e.dataTransfer?.files?.[0];
+  if (f) handlePstFileObject(f);
+});
+
+function hasFilesDrag(e) {
+  return Boolean(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files'));
+}
+window.addEventListener('dragenter', e => {
+  if (!hasFilesDrag(e)) return;
+  globalDragDepth++;
+  globalPstDropOverlay.classList.add('show');
+});
+window.addEventListener('dragover', e => {
+  if (!hasFilesDrag(e)) return;
+  e.preventDefault();
+});
+window.addEventListener('dragleave', () => {
+  if (globalDragDepth > 0) globalDragDepth--;
+  if (globalDragDepth === 0) globalPstDropOverlay.classList.remove('show');
+});
+window.addEventListener('drop', e => {
+  if (!hasFilesDrag(e)) return;
+  e.preventDefault();
+  globalDragDepth = 0;
+  globalPstDropOverlay.classList.remove('show');
+  const f = e.dataTransfer?.files?.[0];
+  if (f) {
+    if (!pstModal.classList.contains('open')) openPstModal();
+    handlePstFileObject(f);
+  }
+});
+
+async function inspectPstPath(pathStr) {
+  const target = (pathStr ?? pstPathInput.value).trim();
+  if (!target) {
+    showPstError('PST 파일 경로를 입력하거나 선택해 주세요.');
+    return;
+  }
+  clearPstNotices();
+  pstInspectResult.style.display = 'block';
+  pstInspectResult.textContent = 'PST 폴더 구조와 메일 건수를 확인하는 중…';
+  pstInspectBtn.disabled = true;
+  try {
+    const r = await fetch('/api/pst/inspect', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: target }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.error || 'PST 검사에 실패했습니다.');
+    pstInspectResult.replaceChildren();
+    const head = node('div');
+    head.append(
+      node('strong', `${d.name} `),
+      node('span', `· 전체 ${Number(d.totalItems || 0).toLocaleString()}개 항목 · 폴더 ${Number(d.folderCount || 0).toLocaleString()}개 · ${formatSize(d.bytes)}`),
+    );
+    pstInspectResult.append(head);
+    if (d.folders && d.folders.length) {
+      const list = node('div', '', 'pst-folder-list');
+      for (const f of d.folders) {
+        const row = node('div', '', 'pst-folder-row');
+        row.append(node('span', f.path), node('strong', `${Number(f.items || 0).toLocaleString()}개`));
+        list.append(row);
+      }
+      pstInspectResult.append(list);
+    } else {
+      pstInspectResult.append(node('div', '추출할 메일 항목이 없는 빈 PST 파일입니다.', 'row-sub'));
+    }
+  } catch (err) {
+    pstInspectResult.style.display = 'none';
+    showPstError(err.message || 'PST 검사 중 오류가 발생했습니다.');
+  } finally {
+    pstInspectBtn.disabled = false;
+  }
+}
+pstInspectBtn.onclick = () => inspectPstPath(pstPathInput.value);
+
+function renderPstJobStatus(st) {
+  pstProgressArea.style.display = 'block';
+  pstProgressArea.replaceChildren();
+
+  const expected = Number(st.expected || 0);
+  const exported = Number(st.exported || 0);
+  const pct = expected > 0 ? Math.min(100, Math.round((exported / expected) * 100)) : (st.phase === 'done' ? 100 : 0);
+
+  const phaseText = st.phase === 'starting' ? 'PST 파일 여는 중…'
+    : st.phase === 'extracting' ? `메일·첨부파일 추출 중 (${pct}%)`
+    : st.phase === 'indexing' ? '통합 검색 색인 등록 중…'
+    : st.phase === 'done' ? '변환 및 검색 등록 완료 (100%)'
+    : '오류 발생';
+
+  const top = node('div', '', 'pst-folder-row');
+  top.append(node('strong', phaseText), node('span', `${exported.toLocaleString()} / ${expected.toLocaleString()}건 · 첨부 ${Number(st.attachments || 0).toLocaleString()}개`));
+  pstProgressArea.append(top);
+
+  const track = node('div', '', 'pst-bar-track');
+  const fill = node('div', '', 'pst-bar-fill');
+  fill.style.width = pct + '%';
+  track.append(fill);
+  pstProgressArea.append(track);
+
+  if (st.current_folder || st.current_subject) {
+    const cur = node('div', [st.current_folder, st.current_subject].filter(Boolean).join(' · '), 'row-sub');
+    pstProgressArea.append(cur);
+  }
+
+  const years = Object.entries(st.years || {}).sort((a, b) => b[0].localeCompare(a[0]));
+  if (years.length) {
+    const chips = node('div', '', 'pst-year-chips');
+    for (const [yr, cnt] of years.slice(0, 12)) {
+      chips.append(node('span', `${yr}년 ${Number(cnt).toLocaleString()}`, 'badge'));
+    }
+    pstProgressArea.append(chips);
+  }
+
+  if (st.phase === 'done') {
+    pstConvertBtn.disabled = false;
+    pstInspectBtn.disabled = false;
+    pstResultArea.style.display = 'block';
+    pstResultArea.replaceChildren();
+    pstResultArea.append(
+      node('strong', '✅ 변환 및 검색 등록이 완료되었습니다.'),
+      node('div', `추출 메일 ${exported.toLocaleString()}건 · 첨부파일 ${Number(st.attachments || 0).toLocaleString()}개 (${formatSize(st.attachment_bytes)}) · 검색 새로 추가 ${Number(st.added_to_search || 0).toLocaleString()}건 · 중복 제외 ${Number(st.duplicates_skipped || 0).toLocaleString()}건`, 'row-sub'),
+      node('div', `저장 경로: ${st.output_dir}`, 'row-sub'),
+    );
+    if (st.warnings || st.errors) {
+      pstResultArea.append(node('div', `참고: 추출 경고 ${st.warnings || 0}건 · 오류 ${st.errors || 0}건 (출력 폴더 내 추출결과.json에서 확인 가능)`, 'row-sub'));
+    }
+    const bar = node('div', '', 'mini-actions');
+    bar.style.marginTop = '8px';
+    const openOutBtn = node('button', '📂 변환된 폴더 열기', 'btn-mini');
+    openOutBtn.type = 'button';
+    openOutBtn.onclick = async () => {
+      try {
+        const r = await fetch('/api/pst/open-output', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: st.output_dir }),
+        });
+        if (!r.ok) {
+          const errData = await r.json().catch(() => ({}));
+          showToast(errData.error || '폴더를 열지 못했습니다.');
+        }
+      } catch {
+        showToast('폴더 열기 요청 실패');
+      }
+    };
+    const searchNowBtn = node('button', '🔍 변환된 메일 바로 검색', 'btn-mini primary');
+    searchNowBtn.type = 'button';
+    searchNowBtn.onclick = () => {
+      closePstModal();
+      q.value = '';
+      state.folder = '';
+      state.excludeMail = false;
+      catEl.value = '';
+      extEl.value = 'mail';
+      sortEl.value = 'mtime_desc';
+      syncInputs();
+      runSearch(0, { live: false });
+    };
+    bar.append(openOutBtn, searchNowBtn);
+    pstResultArea.append(bar);
+
+    searchCache.clear();
+    activeSearchKey = '';
+    health();
+    loadTopFolders();
+  } else if (st.phase === 'error') {
+    pstConvertBtn.disabled = false;
+    pstInspectBtn.disabled = false;
+    showPstError(st.error || 'PST 변환 중 오류가 발생했습니다.');
+  }
+}
+
+function schedulePstPoll() {
+  stopPstPolling();
+  pstPollTimer = setTimeout(async () => {
+    try {
+      const r = await fetch('/api/pst/status');
+      if (!r.ok) throw Error();
+      const st = await r.json();
+      renderPstJobStatus(st);
+      if (st.running) schedulePstPoll();
+    } catch {
+      if (pstModal.classList.contains('open')) schedulePstPoll();
+    }
+  }, 350);
+}
+
+pstConvertBtn.onclick = async () => {
+  const target = pstPathInput.value.trim();
+  if (!target) {
+    showPstError('먼저 변환할 PST 파일을 선택하거나 드래그 앤 드롭해 주세요.');
+    return;
+  }
+  clearPstNotices();
+  const mode = document.querySelector('input[name="pst-target-mode"]:checked')?.value || 'mail_archive';
+  pstConvertBtn.disabled = true;
+  pstInspectBtn.disabled = true;
+  try {
+    const r = await fetch('/api/pst/convert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: target, target_mode: mode }),
+    });
+    const d = await r.json();
+    if (!r.ok || d.ok === false) throw new Error(d.error || 'PST 변환을 시작하지 못했습니다.');
+    renderPstJobStatus(d.status);
+    schedulePstPoll();
+  } catch (err) {
+    pstConvertBtn.disabled = false;
+    pstInspectBtn.disabled = false;
+    showPstError(err.message || 'PST 변환을 시작할 수 없습니다.');
+  }
+};
 
 setViewMode(state.viewMode);
 renderRecentQueries();

@@ -26,6 +26,8 @@ SYNC_APP_FILES = (
     'related.py',
     'preview_excel.py',
     'import_verified_notes.py',
+    'pst_converter.py',
+    'pst_worker.cjs',
     'index.html',
     'manifest.webmanifest',
     'icon-180.png',
@@ -73,6 +75,15 @@ def backup_code(version, stamp):
         if src.is_file():
             shutil.copy2(src, dest / 'app' / name)
             copied += 1
+    vendor_src = APP_DIR / 'vendor'
+    if vendor_src.is_dir():
+        shutil.copytree(
+            vendor_src,
+            dest / 'app' / 'vendor',
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.pyo'),
+        )
+        copied += sum(1 for p in (dest / 'app' / 'vendor').rglob('*') if p.is_file())
     for name in (*SYNC_ROOT_FILES, 'README.md', 'AGENTS.md', 'GEMINI.md', '.gitignore'):
         src = ROOT_DIR / name
         if src.is_file():
@@ -100,6 +111,14 @@ def sync_targets():
             src = APP_DIR / name
             if src.is_file():
                 shutil.copy2(src, target_app / name)
+        vendor_src = APP_DIR / 'vendor'
+        if vendor_src.is_dir():
+            shutil.copytree(
+                vendor_src,
+                target_app / 'vendor',
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns('__pycache__', '*.pyc', '*.pyo'),
+            )
         for name in SYNC_ROOT_FILES:
             src = ROOT_DIR / name
             if src.is_file():
