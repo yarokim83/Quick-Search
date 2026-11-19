@@ -1075,12 +1075,13 @@ class Handler(BaseHTTPRequestHandler):
                 sort_by = q.get('sort', ['score'])[0]
                 folder = q.get('folder', [''])[0][:300]
                 exclude_mail = q.get('exclude_mail', [''])[0] in ('1', 'true', 'yes')
+                browse_all = q.get('browse_all', [''])[0] in ('1', 'true', 'yes')
                 offset = max(0, int(q.get('offset', ['0'])[0]))
                 limit = min(MAX_LIMIT, max(10, int(q.get('limit', [str(DEFAULT_LIMIT)])[0])))
 
                 parsed = parse_advanced_query(query)
                 has_filter = bool(
-                    folder or category or ext_filter or scope == 'body' or exclude_mail
+                    browse_all or folder or category or ext_filter or scope == 'body' or exclude_mail
                     or parsed['excludes'] or parsed['path_filters'] or parsed['ext_tokens']
                     or parsed['phrases'] or parsed['or_groups']
                 )
