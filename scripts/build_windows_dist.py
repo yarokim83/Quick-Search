@@ -231,7 +231,7 @@ ROOT_FILES = (
     'VERSION',
     'CHANGELOG.md',
 )
-SKIP_DIRS = frozenset(('__pycache__', '.git', '.agents', 'backups', 'dist'))
+SKIP_DIRS = frozenset(('__pycache__', '.git', '.agents', 'backups'))
 SKIP_FILES = frozenset(('desktop.ini', 'thumbs.db'))
 
 
@@ -402,6 +402,7 @@ def build_all():
             f'{PACKAGE_ROOT}/app/pst_converter.py',
             f'{PACKAGE_ROOT}/app/pst_worker.cjs',
             f'{PACKAGE_ROOT}/app/vendor/pst_node/node_modules/pst-extractor/package.json',
+            f'{PACKAGE_ROOT}/app/vendor/pst_node/node_modules/pst-extractor/dist/index.js',
             f'{PACKAGE_ROOT}/app/index.html',
         )
         missing = [r for r in required if r not in names]

@@ -9,9 +9,9 @@ windows_config.json
 *파일인벤토리*.json
 
 # 임베디드 Python 런타임 및 로컬 백업/배포 폴더/실행 바이너리
-runtime/
-backups/
-dist/
+/runtime/
+/backups/
+/dist/
 *.zip
 *.exe
 app/hpnt_icon.ico
