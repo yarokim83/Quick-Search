@@ -1,5 +1,6 @@
-import sqlite3, re, json, mimetypes, os, shutil, time, threading, subprocess, sys, zipfile, ctypes
+import sqlite3, re, json, mimetypes, os, shutil, time, threading, subprocess, sys, zipfile, ctypes, hashlib, hmac, socket
 from collections import Counter
+from http.cookies import SimpleCookie
 from itertools import chain
 from pathlib import Path
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -60,6 +61,12 @@ ORIGINAL_EXTENSIONS = frozenset((
 ))
 OPEN_LOCAL_EXTENSIONS = ORIGINAL_EXTENSIONS | frozenset(('.msg', '.eml', '.csv', '.md', '.json'))
 FOLDER_ID_OFFSET = 10_000_000
+BIND_HOST = os.environ.get('HPNT_HOST', '127.0.0.1').strip() or '127.0.0.1'
+REMOTE_MODE = BIND_HOST not in ('127.0.0.1', 'localhost', '::1')
+ACCESS_PIN = os.environ.get('HPNT_ACCESS_PIN', '').strip()
+AUTH_COOKIE_NAME = 'hpnt_auth'
+_LOGIN_FAILS_LOCK = threading.Lock()
+_LOGIN_FAILS = {}
 scan_lock = threading.Lock()
 _LIVE_SEQ_LOCK = threading.Lock()
 _LIVE_SEARCH_SEQ = 0
@@ -954,6 +961,91 @@ def worker():
         time.sleep(600)
 
 
+def _auth_token():
+    if not ACCESS_PIN:
+        return ''
+    return hmac.new(ACCESS_PIN.encode('utf-8'), b'hpnt-quick-search-remote-v1', hashlib.sha256).hexdigest()
+
+
+def _render_login_html():
+    return """<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>HPNT 업무자료 검색 · PIN 인증</title>
+<meta name="theme-color" content="#14655e">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="HPNT 검색">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" sizes="180x180" href="/icon-180.png">
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    padding: 20px; background: #eef2f5; color: #162a35;
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Malgun Gothic", sans-serif;
+  }
+  .card {
+    width: 100%; max-width: 360px; background: #fff; border: 1px solid #d7e0e5;
+    border-radius: 16px; padding: 26px 24px; box-shadow: 0 8px 28px rgba(17, 41, 53, 0.08);
+  }
+  h1 { margin: 0 0 6px; font-size: 20px; color: #0f4e48; }
+  p { margin: 0 0 18px; font-size: 13.5px; color: #566c78; }
+  input {
+    width: 100%; padding: 13px 14px; font-size: 18px; letter-spacing: 2px; text-align: center;
+    border: 1.5px solid #b8c7cf; border-radius: 10px; outline: none;
+  }
+  input:focus { border-color: #14655e; box-shadow: 0 0 0 3px rgba(20, 101, 94, 0.14); }
+  button {
+    width: 100%; margin-top: 12px; padding: 13px; font-size: 16px; font-weight: 600;
+    color: #fff; background: #14655e; border: none; border-radius: 10px; cursor: pointer;
+  }
+  button:disabled { opacity: 0.6; }
+  .err { margin-top: 12px; font-size: 13px; color: #b42318; min-height: 20px; text-align: center; }
+</style>
+</head>
+<body>
+<form class="card" id="login-form">
+  <h1>🔒 HPNT 업무자료 검색</h1>
+  <p>원격 기기(아이패드 등)에서 접속하려면 서버에 설정된 접속 PIN을 입력해 주세요.</p>
+  <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="PIN 입력" autofocus required>
+  <button type="submit" id="submit-btn">접속하기</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+const form = document.getElementById('login-form');
+const pinEl = document.getElementById('pin');
+const errEl = document.getElementById('err');
+const btn = document.getElementById('submit-btn');
+form.onsubmit = async (e) => {
+  e.preventDefault();
+  errEl.textContent = '';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pin: pinEl.value }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok && d.ok) {
+      location.replace('/');
+      return;
+    }
+    errEl.textContent = d.error || 'PIN이 올바르지 않습니다.';
+    pinEl.select();
+  } catch {
+    errEl.textContent = '서버에 연결할 수 없습니다.';
+  } finally {
+    btn.disabled = false;
+  }
+};
+</script>
+</body>
+</html>""".encode('utf-8')
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -964,15 +1056,57 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def allowed_request(self):
+    def is_local_client(self):
+        return self.client_address[0] in ('127.0.0.1', '::1')
+
+    def _valid_remote_host(self):
+        hosts = self.headers.get_all('Host') or []
+        if len(hosts) != 1:
+            return None
+        host_val = hosts[0].strip()
+        if not host_val or any(ch.isspace() or ord(ch) < 32 for ch in host_val):
+            return None
         port = self.server.server_port
-        return self.headers.get_all('Host') in ([f'127.0.0.1:{port}'], [f'localhost:{port}'])
+        if host_val in (f'127.0.0.1:{port}', f'localhost:{port}', f'[::1]:{port}'):
+            return host_val
+        if not REMOTE_MODE:
+            return None
+        if host_val.endswith(f':{port}'):
+            return host_val
+        if port == 80 and ':' not in host_val:
+            return host_val
+        return None
+
+    def allowed_request(self):
+        return self._valid_remote_host() is not None
 
     def allowed_origin(self):
+        origin = self.headers.get('Origin', '').strip()
         port = self.server.server_port
-        return self.headers.get('Origin', '') in (f'http://127.0.0.1:{port}', f'http://localhost:{port}')
+        if origin in (f'http://127.0.0.1:{port}', f'http://localhost:{port}', f'http://[::1]:{port}'):
+            return True
+        if not REMOTE_MODE:
+            return False
+        host_val = self._valid_remote_host()
+        return bool(host_val and origin in (f'http://{host_val}', f'https://{host_val}'))
 
-    def send(self, data, typ='application/json; charset=utf-8', status=200, frame_ancestors="'none'"):
+    def is_authenticated(self):
+        if not ACCESS_PIN or self.is_local_client():
+            return True
+        raw_cookie = self.headers.get('Cookie', '')
+        if not raw_cookie:
+            return False
+        jar = SimpleCookie()
+        try:
+            jar.load(raw_cookie)
+        except Exception:
+            return False
+        morsel = jar.get(AUTH_COOKIE_NAME)
+        if not morsel:
+            return False
+        return hmac.compare_digest(morsel.value, _auth_token())
+
+    def send(self, data, typ='application/json; charset=utf-8', status=200, frame_ancestors="'none'", extra_headers=None):
         csp = f"default-src 'self'; img-src 'self' data:; frame-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; frame-ancestors {frame_ancestors}"
         try:
             self.send_response(status)
@@ -980,6 +1114,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.send_header('Content-Security-Policy', csp)
+            if extra_headers:
+                for k, v in extra_headers:
+                    self.send_header(k, v)
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()
             self.wfile.write(data)
@@ -1032,7 +1169,44 @@ class Handler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         route = parsed_url.path
 
+        if route == '/api/login':
+            if self.headers.get('Content-Type', '').split(';')[0].strip().lower() != 'application/json':
+                return self.send(b'Forbidden', status=403)
+            if not ACCESS_PIN:
+                return self.send(json.dumps({'ok': True}).encode())
+            client_ip = self.client_address[0]
+            now = time.monotonic()
+            with _LOGIN_FAILS_LOCK:
+                fails, lock_until = _LOGIN_FAILS.get(client_ip, (0, 0.0))
+                if lock_until > now:
+                    wait_sec = max(1, int(lock_until - now))
+                    return self.send_json_error(f'입력 오류가 반복되어 {wait_sec}초 후 다시 시도해 주세요.', status=429)
+            try:
+                payload = self.parse_post_json()
+                pin = str((payload or {}).get('pin', '')).strip()
+            except (ValueError, json.JSONDecodeError):
+                return self.send_json_error('잘못된 요청입니다.', status=400)
+            if pin and hmac.compare_digest(pin, ACCESS_PIN):
+                with _LOGIN_FAILS_LOCK:
+                    _LOGIN_FAILS.pop(client_ip, None)
+                cookie = f'{AUTH_COOKIE_NAME}={_auth_token()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000'
+                return self.send(json.dumps({'ok': True}).encode(), extra_headers=[('Set-Cookie', cookie)])
+            with _LOGIN_FAILS_LOCK:
+                fails = fails + 1
+                lock_until = (now + 30.0) if fails >= 5 else 0.0
+                _LOGIN_FAILS[client_ip] = (0 if fails >= 5 else fails, lock_until)
+            return self.send_json_error('PIN이 올바르지 않습니다.', status=401)
+
+        if route == '/api/logout':
+            cookie = f'{AUTH_COOKIE_NAME}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'
+            return self.send(json.dumps({'ok': True}).encode(), extra_headers=[('Set-Cookie', cookie)])
+
+        if not self.is_authenticated():
+            return self.send(json.dumps({'ok': False, 'auth_required': True, 'error': 'PIN 인증이 필요합니다.'}, ensure_ascii=False).encode(), status=401)
+
         if route == '/api/pst/upload':
+            if not self.is_local_client():
+                return self.send_json_error('PST 변환은 서버 PC에서만 사용할 수 있습니다.', status=403)
             try:
                 length = int(self.headers.get('Content-Length', '0'))
                 q = parse_qs(parsed_url.query)
@@ -1060,6 +1234,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(json.dumps({'ok': True, 'started': True, 'message': '목록 갱신을 시작했습니다.'}, ensure_ascii=False).encode())
 
         if route.startswith('/api/pst/'):
+            if not self.is_local_client():
+                return self.send_json_error('PST 변환은 서버 PC에서만 사용할 수 있습니다.', status=403)
             try:
                 payload = self.parse_post_json(max_len=8192)
                 if payload is None:
@@ -1119,6 +1295,8 @@ class Handler(BaseHTTPRequestHandler):
 
         if route not in ('/api/open-local', '/api/open-folder'):
             return self.send(b'Not found', status=404)
+        if not self.is_local_client():
+            return self.send('원격 기기에서는 원본 다운로드 또는 미리보기를 이용해 주세요.'.encode(), 'text/plain; charset=utf-8', 403)
         try:
             payload = self.parse_post_json()
             if not isinstance(payload, dict):
@@ -1140,16 +1318,21 @@ class Handler(BaseHTTPRequestHandler):
                     rc = ctypes.windll.shell32.ShellExecuteW(None, 'open', str(p), None, str(p.parent), 1)
                     if rc <= 32:
                         raise OSError(f'ShellExecuteW failed: {rc}')
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(['open', str(p)])
                 elif hasattr(os, 'startfile'):
                     os.startfile(str(p))
                 else:
-                    return self.send('이 기능은 Windows PC에서 사용할 수 있습니다.'.encode(), 'text/plain; charset=utf-8', 501)
+                    return self.send('이 기능은 Windows/macOS PC에서 사용할 수 있습니다.'.encode(), 'text/plain; charset=utf-8', 501)
             else:
-                if os.name != 'nt':
-                    return self.send('이 기능은 Windows PC에서 사용할 수 있습니다.'.encode(), 'text/plain; charset=utf-8', 501)
-                if '"' in str(p):
-                    raise OSError('invalid path')
-                subprocess.Popen(f'explorer.exe /select,"{p}"')
+                if os.name == 'nt':
+                    if '"' in str(p):
+                        raise OSError('invalid path')
+                    subprocess.Popen(f'explorer.exe /select,"{p}"')
+                elif sys.platform == 'darwin':
+                    subprocess.Popen(['open', '-R', str(p)])
+                else:
+                    return self.send('이 기능은 Windows/macOS PC에서 사용할 수 있습니다.'.encode(), 'text/plain; charset=utf-8', 501)
             return self.send(json.dumps({'ok': True}).encode())
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
@@ -1164,14 +1347,24 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         try:
-            if u.path == '/':
-                return self.send((BASE / 'index.html').read_bytes(), 'text/html; charset=utf-8')
             if u.path == '/manifest.webmanifest':
                 return self.send((BASE / 'manifest.webmanifest').read_bytes(), 'application/manifest+json; charset=utf-8')
             if u.path in ('/icon-180.png', '/icon-192.png', '/icon-512.png'):
                 return self.send((BASE / u.path.lstrip('/')).read_bytes(), 'image/png')
+            if u.path == '/login':
+                return self.send(_render_login_html(), 'text/html; charset=utf-8')
+            if not self.is_authenticated():
+                if u.path == '/':
+                    return self.send(_render_login_html(), 'text/html; charset=utf-8')
+                return self.send(json.dumps({'ok': False, 'auth_required': True, 'error': 'PIN 인증이 필요합니다.'}, ensure_ascii=False).encode(), status=401)
+            if u.path == '/':
+                return self.send((BASE / 'index.html').read_bytes(), 'text/html; charset=utf-8')
             if u.path == '/api/status':
-                return self.send(json.dumps(stats(), ensure_ascii=False).encode())
+                st = stats()
+                st['is_local_client'] = self.is_local_client()
+                st['remote_mode'] = REMOTE_MODE
+                st['pin_enabled'] = bool(ACCESS_PIN)
+                return self.send(json.dumps(st, ensure_ascii=False).encode())
             if u.path == '/api/pst/status':
                 return self.send(json.dumps(get_job_status(), ensure_ascii=False).encode())
             if u.path == '/api/folders':
@@ -1380,19 +1573,40 @@ def warm_cache():
         pass
 
 
+def _detect_lan_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(('8.8.8.8', 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except OSError:
+        return ''
+
+
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--search-only', action='store_true')
+    parser.add_argument('--host', default=BIND_HOST)
     parser.add_argument('--port', type=int, default=8765)
+    parser.add_argument('--pin', default=ACCESS_PIN)
     args = parser.parse_args()
+    BIND_HOST = (args.host or '127.0.0.1').strip()
+    REMOTE_MODE = BIND_HOST not in ('127.0.0.1', 'localhost', '::1')
+    ACCESS_PIN = (args.pin or '').strip()
     init()
     threading.Thread(target=warm_cache, daemon=True).start()
-    with QuietHTTPServer(('127.0.0.1', args.port), Handler) as server:
+    with QuietHTTPServer((BIND_HOST, args.port), Handler) as server:
         if os.environ.get('HPNT_OPEN_BROWSER') == '1':
             import webbrowser
             threading.Timer(.2, lambda: webbrowser.open(f'http://127.0.0.1:{args.port}/')).start()
         if not args.search_only:
             threading.Thread(target=worker, daemon=True).start()
-        print(f'HPNT search: http://127.0.0.1:{args.port}', flush=True)
+        print(f'HPNT search (local): http://127.0.0.1:{args.port}', flush=True)
+        if REMOTE_MODE:
+            lan_ip = _detect_lan_ip()
+            if lan_ip:
+                print(f'HPNT search (iPad/LAN): http://{lan_ip}:{args.port}', flush=True)
+            print(f'PIN protection: {"ENABLED" if ACCESS_PIN else "DISABLED"}', flush=True)
         server.serve_forever()

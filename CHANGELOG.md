@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7.0] - 2026-11-20
+### Added
+- **Mac 서버 원격 호스팅 및 아이패드(iPad) 접속·PIN 보안 모드 (`app/server.py`, `app/index.html`, `scripts/start_mac.sh`, `MAC_IPAD_GUIDE.md`)**:
+  - `--host 0.0.0.0` / `HPNT_HOST` 원격 바인딩 및 `--pin` / `HPNT_ACCESS_PIN` 접속 PIN 인증 도입 (HMAC-SHA256 `HttpOnly` 세션 쿠키 30일 유지, 5회 오입력 시 30초 잠금, 로컬 PC 접속 시 자동 통과)
+  - 원격(아이패드) 클라이언트에서는 PC 전용 API(`/api/open-local`, `/api/open-folder`, `/api/pst/*`)를 `403`으로 차단하고 UI에서도 해당 버튼을 자동 숨김
+  - 아이패드 Safari/PWA 터치 조작 최적화(`viewport-fit=cover`, 입력창 자동 확대 방지 `16px`, 터치 타깃 확장, 원격 클라이언트용 `미리보기`·`새 창 PDF`·`원본 다운로드` 버튼 우선 배치 및 `🔒 로그아웃` 버튼 추가)
+  - macOS 로컬 사용 시 `open` / `open -R`을 통한 Finder 파일·폴더 열기 지원
+  - macOS Google Drive 자동 탐지·PIN 저장·Wi-Fi/Tailscale 접속 주소 자동 안내 스크립트(`scripts/start_mac.sh`) 및 설정 가이드(`MAC_IPAD_GUIDE.md`) 추가
+
 ## [1.6.0] - 2026-11-19
 ### Improved
 - **실시간 입력(Live Typing) 검색 지연 전면 개선 — 인메모리 2-gram 역인덱스 및 서버 측 즉시 취소 도입 (`app/server.py`, `app/mail_archive.py`, `app/related.py`, `app/index.html`)**:

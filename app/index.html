@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>HPNT 업무자료 통합 검색</title>
 <meta name="theme-color" content="#14655e">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -789,25 +789,39 @@
   }
   .pst-year-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
 
+  .remote-client .pc-only { display: none !important; }
+
   @media (max-width: 1200px) {
     .workspace { grid-template-columns: 195px 1fr; }
     .workspace.no-sidebar { grid-template-columns: 1fr; }
     .inspector:not(.hidden) {
       position: fixed;
       right: 12px;
-      bottom: 12px;
-      top: 12px;
-      width: min(400px, calc(100vw - 24px));
+      bottom: max(12px, env(safe-area-inset-bottom));
+      top: max(12px, env(safe-area-inset-top));
+      width: min(460px, calc(100vw - 24px));
       max-height: none;
       z-index: 150;
       box-shadow: 0 10px 36px rgba(0, 0, 0, 0.25);
     }
-    .inspector-body { max-height: calc(100vh - 80px); }
+    .inspector-body { max-height: calc(100vh - 80px); -webkit-overflow-scrolling: touch; }
   }
   @media (max-width: 820px) {
     .workspace, .workspace.no-inspector { grid-template-columns: 1fr; }
     .sidebar { position: static; max-height: 320px; }
     .sidebar.mobile-hidden { display: none; }
+    .kbd-hint { display: none; }
+  }
+  @media (pointer: coarse) {
+    .app-shell {
+      padding-left: max(10px, env(safe-area-inset-left));
+      padding-right: max(10px, env(safe-area-inset-right));
+      padding-bottom: max(14px, env(safe-area-inset-bottom));
+    }
+    #q, .select-controls select { font-size: 16px; min-height: 40px; }
+    .btn-primary, .btn-soft, .op-chip { min-height: 36px; }
+    .btn-mini, .btn-action { min-height: 34px; padding: 6px 10px; }
+    .side-body, #results-container, .inspector-body { -webkit-overflow-scrolling: touch; }
     .kbd-hint { display: none; }
   }
 </style>
@@ -824,10 +838,11 @@
         <span class="pill" id="stat-sync">동기화 확인 중…</span>
       </div>
       <div class="top-actions">
-        <button type="button" id="pst-btn" class="btn-soft">📥 PST 메일 변환·추가</button>
+        <button type="button" id="pst-btn" class="btn-soft pc-only">📥 PST 메일 변환·추가</button>
         <button type="button" id="toggle-sidebar-btn" class="btn-soft">사이드바</button>
         <button type="button" id="rescan-btn" class="btn-soft">지금 목록 갱신</button>
         <button type="button" id="help-btn" class="btn-soft">검색 연산자·단축키</button>
+        <button type="button" id="logout-btn" class="btn-soft" style="display:none">🔒 로그아웃</button>
       </div>
     </div>
 
@@ -1055,6 +1070,8 @@ let state = {
   topFolders: [],
   selectedId: null,
   rawExtLabel: '',
+  isLocalClient: true,
+  pinEnabled: false,
 };
 let toastTimer = null;
 let liveTimer = null;
@@ -1697,27 +1714,27 @@ function openInspector(file) {
 
   if (file.path_confirmed !== false) {
     if (file.kind === 'folder') {
-      const openBtn = node('button', '폴더 열기 (Enter)', 'btn-action primary');
+      const openBtn = node('button', '폴더 열기 (Enter)', 'btn-action primary pc-only');
       openBtn.type = 'button';
       openBtn.onclick = () => postFileAction('/api/open-local', file, feedback, '폴더를 여는 중…', '탐색기에서 폴더를 열었습니다.');
       actions.append(openBtn);
 
-      const browseBtn = node('button', '앱 안에서 내부 보기', 'btn-action');
+      const browseBtn = node('button', '앱 안에서 내부 보기', state.isLocalClient ? 'btn-action' : 'btn-action primary');
       browseBtn.type = 'button';
       browseBtn.onclick = () => setFolderFilter(file.path);
       actions.append(browseBtn);
 
-      const parentBtn = node('button', '상위 위치 열기', 'btn-action');
+      const parentBtn = node('button', '상위 위치 열기', 'btn-action pc-only');
       parentBtn.type = 'button';
       parentBtn.onclick = () => postFileAction('/api/open-folder', file, feedback, '상위 위치 여는 중…', '탐색기에서 위치를 열었습니다.');
       actions.append(parentBtn);
     } else {
-      const openBtn = node('button', '원본 열기 (Enter)', 'btn-action primary');
+      const openBtn = node('button', '원본 열기 (Enter)', 'btn-action primary pc-only');
       openBtn.type = 'button';
       openBtn.onclick = () => postFileAction('/api/open-local', file, feedback, '원본을 여는 중…', '원본 열기를 요청했습니다.');
       actions.append(openBtn);
 
-      const folderBtn = node('button', '폴더 열기', 'btn-action');
+      const folderBtn = node('button', '폴더 열기', 'btn-action pc-only');
       folderBtn.type = 'button';
       folderBtn.onclick = () => postFileAction('/api/open-folder', file, feedback, '탐색기 여는 중…', '탐색기에서 파일 위치를 열었습니다.');
       actions.append(folderBtn);
@@ -1736,7 +1753,7 @@ function openInspector(file) {
 
   if (file.path_confirmed !== false && file.original_available !== false) {
     const page = file.extension === '.pdf' ? /^페이지 ([1-9][0-9]*)(?:$|\s)/.exec(file.location ?? '')?.[1] : null;
-    const dl = node('a', file.extension === '.pdf' ? '새 창 PDF' : '원본 다운로드', 'btn-action');
+    const dl = node('a', file.extension === '.pdf' ? '새 창 PDF' : '원본 다운로드', state.isLocalClient ? 'btn-action' : 'btn-action primary');
     dl.href = '/original?id=' + file.id + (page ? '#page=' + page : '');
     dl.target = '_blank'; dl.rel = 'noopener';
     dl.onclick = () => recordOpened(file);
@@ -1770,14 +1787,15 @@ function openInspector(file) {
       head.append(nm);
       const bar = node('div', '', 'mini-actions');
       bar.style.marginTop = '6px';
-      const oBtn = node('button', '첨부 열기', 'btn-mini primary');
+      const oBtn = node('button', '첨부 열기', 'btn-mini primary pc-only');
       oBtn.type = 'button';
       oBtn.onclick = () => postFileAction('/api/open-local', file, feedback, '첨부파일을 여는 중…', '첨부파일 열기를 요청했습니다.', att.index);
-      const fBtn = node('button', '폴더 열기', 'btn-mini');
+      const fBtn = node('button', '폴더 열기', 'btn-mini pc-only');
       fBtn.type = 'button';
       fBtn.onclick = () => postFileAction('/api/open-folder', file, feedback, '탐색기 여는 중…', '탐색기에서 첨부 위치를 열었습니다.', att.index);
-      const dl = node('a', att.ext === '.pdf' ? '새 창 PDF' : '다운로드', 'btn-mini');
-      dl.style.cssText = 'text-decoration:none;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);';
+      const dl = node('a', att.ext === '.pdf' ? '새 창 PDF' : '다운로드', state.isLocalClient ? 'btn-mini' : 'btn-mini primary');
+      dl.style.textDecoration = 'none';
+      if (state.isLocalClient) dl.style.cssText = 'text-decoration:none;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);';
       dl.href = `/original?id=${file.id}&att=${att.index}`;
       dl.target = '_blank'; dl.rel = 'noopener';
       bar.append(oBtn, fBtn, dl);
@@ -1812,13 +1830,20 @@ function openInspector(file) {
       const sub = node('div', `${formatSize(orig.size)} · ${formatDate(orig.mtime)}`, 'row-sub');
       const bar = node('div', '', 'mini-actions');
       bar.style.marginTop = '6px';
-      const oBtn = node('button', '원본 열기', 'btn-mini primary');
+      const oBtn = node('button', '원본 열기', 'btn-mini primary pc-only');
       oBtn.type = 'button';
       oBtn.onclick = () => postFileAction('/api/open-local', orig, feedback, '원본을 여는 중…', '원본 열기를 요청했습니다.');
-      const fBtn = node('button', '폴더 열기', 'btn-mini');
+      const fBtn = node('button', '폴더 열기', 'btn-mini pc-only');
       fBtn.type = 'button';
       fBtn.onclick = () => postFileAction('/api/open-folder', orig, feedback, '탐색기 여는 중…', '탐색기에서 위치를 열었습니다.');
       bar.append(oBtn, fBtn);
+      if (orig.original_available !== false) {
+        const dl = node('a', orig.extension === '.pdf' ? '새 창 PDF' : '다운로드', state.isLocalClient ? 'btn-mini' : 'btn-mini primary');
+        dl.style.textDecoration = 'none';
+        dl.href = '/original?id=' + orig.id;
+        dl.target = '_blank'; dl.rel = 'noopener';
+        bar.append(dl);
+      }
       box.append(head, sub, bar);
       if (['.xlsx', '.xlsm', '.xls'].includes(orig.extension)) {
         const pBtn = node('button', '시트 미리보기', 'btn-mini');
@@ -2000,14 +2025,14 @@ function renderResultsOnly() {
       const act = node('div', '', 'mini-actions');
       if (h.path_confirmed !== false) {
         if (h.kind === 'folder') {
-          const oBtn = node('button', '열기', 'btn-mini primary');
+          const oBtn = node('button', '열기', 'btn-mini primary pc-only');
           oBtn.type = 'button';
           oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '탐색기에서 폴더를 열었습니다.'); };
-          const inBtn = node('button', '탐색', 'btn-mini');
+          const inBtn = node('button', '탐색', state.isLocalClient ? 'btn-mini' : 'btn-mini primary');
           inBtn.type = 'button';
           inBtn.onclick = e => { e.stopPropagation(); setFolderFilter(h.path); };
           act.append(oBtn, inBtn);
-        } else {
+        } else if (state.isLocalClient) {
           const oBtn = node('button', '열기', 'btn-mini primary');
           oBtn.type = 'button';
           oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.'); };
@@ -2015,6 +2040,19 @@ function renderResultsOnly() {
           fBtn.type = 'button';
           fBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-folder', h, null, '', '탐색기에서 위치를 열었습니다.'); };
           act.append(oBtn, fBtn);
+        } else {
+          const pBtn = node('button', '보기', 'btn-mini primary');
+          pBtn.type = 'button';
+          pBtn.onclick = e => { e.stopPropagation(); openInspector(h); };
+          act.append(pBtn);
+          if (h.original_available !== false) {
+            const dl = node('a', h.extension === '.pdf' ? 'PDF' : '받기', 'btn-mini');
+            dl.style.cssText = 'text-decoration:none;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);';
+            dl.href = '/original?id=' + h.id;
+            dl.target = '_blank'; dl.rel = 'noopener';
+            dl.onclick = e => { e.stopPropagation(); recordOpened(h); };
+            act.append(dl);
+          }
         }
       } else {
         act.append(node('span', '미확인', 'badge badge-warn'));
@@ -2028,7 +2066,8 @@ function renderResultsOnly() {
       };
       tr.ondblclick = e => {
         if (e.target.closest('button.crumb-link[data-folder-path]')) return;
-        postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.');
+        if (state.isLocalClient) postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.');
+        else openInspector(h);
       };
       tbody.append(tr);
     }
@@ -2085,17 +2124,17 @@ function renderResultsOnly() {
       bar.style.marginTop = '8px';
       if (h.path_confirmed !== false) {
         if (h.kind === 'folder') {
-          const oBtn = node('button', '폴더 열기', 'btn-mini primary');
+          const oBtn = node('button', '폴더 열기', 'btn-mini primary pc-only');
           oBtn.type = 'button';
           oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '탐색기에서 폴더를 열었습니다.'); };
-          const inBtn = node('button', '내부 탐색', 'btn-mini');
+          const inBtn = node('button', '내부 탐색', state.isLocalClient ? 'btn-mini' : 'btn-mini primary');
           inBtn.type = 'button';
           inBtn.onclick = e => { e.stopPropagation(); setFolderFilter(h.path); };
-          const fBtn = node('button', '상위 폴더', 'btn-mini');
+          const fBtn = node('button', '상위 폴더', 'btn-mini pc-only');
           fBtn.type = 'button';
           fBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-folder', h, null, '', '탐색기에서 위치를 열었습니다.'); };
           bar.append(oBtn, inBtn, fBtn);
-        } else {
+        } else if (state.isLocalClient) {
           const oBtn = node('button', '원본 열기', 'btn-mini primary');
           oBtn.type = 'button';
           oBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.'); };
@@ -2103,6 +2142,19 @@ function renderResultsOnly() {
           fBtn.type = 'button';
           fBtn.onclick = e => { e.stopPropagation(); postFileAction('/api/open-folder', h, null, '', '탐색기에서 위치를 열었습니다.'); };
           bar.append(oBtn, fBtn);
+        } else {
+          const pBtn = node('button', '미리보기', 'btn-mini primary');
+          pBtn.type = 'button';
+          pBtn.onclick = e => { e.stopPropagation(); openInspector(h); };
+          bar.append(pBtn);
+          if (h.original_available !== false) {
+            const dl = node('a', h.extension === '.pdf' ? '새 창 PDF' : '원본 다운로드', 'btn-mini');
+            dl.style.cssText = 'text-decoration:none;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);';
+            dl.href = '/original?id=' + h.id;
+            dl.target = '_blank'; dl.rel = 'noopener';
+            dl.onclick = e => { e.stopPropagation(); recordOpened(h); };
+            bar.append(dl);
+          }
         }
       }
       const cBtn = node('button', '경로 복사', 'btn-mini');
@@ -2117,7 +2169,8 @@ function renderResultsOnly() {
       };
       card.ondblclick = e => {
         if (e.target.closest('button.crumb-link[data-folder-path]')) return;
-        postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.');
+        if (state.isLocalClient) postFileAction('/api/open-local', h, null, '', '원본 열기를 요청했습니다.');
+        else openInspector(h);
       };
       wrap.append(card);
     }
@@ -2242,6 +2295,7 @@ async function runSearch(offset = 0, { live = false } = {}) {
       limit: (live && !append) ? '50' : '100',
     });
     const r = await fetch('/api/search?' + params, { signal: searchAbort.signal });
+    if (r.status === 401) { location.reload(); return; }
     if (!r.ok) throw Error();
     const data = await r.json();
     if (g !== state.generation || data.cancelled) return;
@@ -2468,7 +2522,8 @@ document.addEventListener('keydown', e => {
     const cur = state.hits.find(h => h.id === state.selectedId);
     if (cur) {
       e.preventDefault();
-      postFileAction('/api/open-local', cur, null, '', '원본 열기를 요청했습니다.');
+      if (state.isLocalClient) postFileAction('/api/open-local', cur, null, '', '원본 열기를 요청했습니다.');
+      else openInspector(cur);
     }
   }
 });
@@ -2486,7 +2541,18 @@ async function loadTopFolders() {
 async function health() {
   try {
     const r = await fetch('/api/status');
+    if (r.status === 401) { location.reload(); return; }
     const d = await r.json();
+    const nextIsLocal = d.is_local_client !== false;
+    const prevIsLocal = state.isLocalClient;
+    state.isLocalClient = nextIsLocal;
+    state.pinEnabled = Boolean(d.pin_enabled);
+    document.body.classList.toggle('remote-client', !nextIsLocal);
+    const logoutBtn = document.querySelector('#logout-btn');
+    if (logoutBtn) logoutBtn.style.display = (!nextIsLocal && state.pinEnabled) ? '' : 'none';
+    const hintEl = document.querySelector('.results-hint');
+    if (hintEl) hintEl.textContent = nextIsLocal ? '클릭=미리보기 · 더블클릭=바로 열기' : '탭=미리보기 · PDF/엑셀 바로 보기';
+    if (prevIsLocal !== nextIsLocal && state.hits.length) renderResultsOnly();
     const nextScan = d.state.last_scan || '';
     if (lastScanSeen !== null && nextScan !== lastScanSeen) {
       searchCache.clear();
@@ -2931,6 +2997,16 @@ pstConvertBtn.onclick = async () => {
     showPstError(err.message || 'PST 변환을 시작할 수 없습니다.');
   }
 };
+
+const logoutBtnEl = document.querySelector('#logout-btn');
+if (logoutBtnEl) {
+  logoutBtnEl.onclick = async () => {
+    try {
+      await fetch('/api/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    } catch {}
+    location.reload();
+  };
+}
 
 setViewMode(state.viewMode);
 renderRecentQueries();
