@@ -121,9 +121,15 @@ if [[ -z "${NODE_BIN}" && -d "${HOME}/.nvm/versions/node" ]]; then
 fi
 
 WIFI_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
+TS_BIN="$(command -v tailscale || true)"
+if [[ -z "${TS_BIN}" && -x "/Applications/Tailscale.app/Contents/MacOS/Tailscale" ]]; then
+  TS_BIN="/Applications/Tailscale.app/Contents/MacOS/Tailscale"
+fi
 TS_IP=""
-if command -v tailscale >/dev/null 2>&1; then
-  TS_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+TS_HTTPS=""
+if [[ -n "${TS_BIN}" ]]; then
+  TS_IP="$("${TS_BIN}" ip -4 2>/dev/null | head -n 1 || true)"
+  TS_HTTPS="$("${TS_BIN}" serve status 2>/dev/null | grep -Eo 'https://[^ ]+\.ts\.net' | head -n 1 || true)"
 fi
 APP_VER="$(cat "${PROJECT_DIR}/VERSION" 2>/dev/null || echo 'unknown')"
 
@@ -145,7 +151,9 @@ echo "  [Mac 브라우저]     http://127.0.0.1:${HPNT_PORT}"
 if [[ -n "${WIFI_IP}" ]]; then
   echo "  [아이패드 Wi-Fi]   http://${WIFI_IP}:${HPNT_PORT}"
 fi
-if [[ -n "${TS_IP}" ]]; then
+if [[ -n "${TS_HTTPS}" ]]; then
+  echo "  [아이패드 HTTPS]   ${TS_HTTPS}  (Tailscale Serve)"
+elif [[ -n "${TS_IP}" ]]; then
   echo "  [아이패드 외부망]  http://${TS_IP}:${HPNT_PORT}  (Tailscale)"
 fi
 echo "============================================================"

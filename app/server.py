@@ -1057,7 +1057,14 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def is_local_client(self):
-        return self.client_address[0] in ('127.0.0.1', '::1')
+        if self.client_address[0] not in ('127.0.0.1', '::1'):
+            return False
+        if self.headers.get('X-Forwarded-For') or self.headers.get('X-Forwarded-Host') or self.headers.get('Tailscale-User-Login'):
+            return False
+        host_val = (self.headers.get('Host') or '').strip().lower()
+        if host_val.endswith('.ts.net') or host_val.endswith('.ts.net:443'):
+            return False
+        return True
 
     def _valid_remote_host(self):
         hosts = self.headers.get_all('Host') or []
@@ -1075,6 +1082,9 @@ class Handler(BaseHTTPRequestHandler):
             return host_val
         if port == 80 and ':' not in host_val:
             return host_val
+        low = host_val.lower()
+        if (low.endswith('.ts.net') and ':' not in low) or low.endswith('.ts.net:443'):
+            return host_val
         return None
 
     def allowed_request(self):
@@ -1088,7 +1098,12 @@ class Handler(BaseHTTPRequestHandler):
         if not REMOTE_MODE:
             return False
         host_val = self._valid_remote_host()
-        return bool(host_val and origin in (f'http://{host_val}', f'https://{host_val}'))
+        if host_val and origin in (f'http://{host_val}', f'https://{host_val}'):
+            return True
+        xf_host = (self.headers.get('X-Forwarded-Host') or '').strip()
+        if xf_host and origin in (f'https://{xf_host}', f'http://{xf_host}'):
+            return True
+        return False
 
     def is_authenticated(self):
         if not ACCESS_PIN or self.is_local_client():

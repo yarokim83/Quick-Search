@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.2] - 2026-11-23
+### Added & Fixed
+- **Tailscale Serve (`https://*.ts.net`) 리버스 프록시 정식 지원 (`app/server.py`, `scripts/start_mac.sh`)**:
+  - `*.ts.net` 호스트 및 `X-Forwarded-Host` / `Tailscale-User-Login` 프록시 헤더를 인식하여 macOS 방화벽 영향을 받지 않는 Tailscale HTTPS 접속 지원
+  - Tailscale Serve 경유 접속 시에도 원격 클라이언트(`is_local_client=False`)로 정확히 판별해 아이패드 전용 UI 및 PIN 보안 인증·PC 전용 API 차단 적용
+  - `scripts/start_mac.sh`에서 macOS App Store용 Tailscale 경로(`/Applications/Tailscale.app/Contents/MacOS/Tailscale`) 자동 탐지 및 HTTPS 접속 주소 안내 추가
+
 ## [1.7.1] - 2026-11-23
 ### Fixed & Improved
 - **macOS 완전 호환성(목록 갱신·PST 메일 변환·Finder 열기) 및 Windows↔Mac 자동 동기화 (`app/pst_converter.py`, `app/server.py`, `scripts/start_mac.sh`, `HPNT_Start_Mac.command`, `MAC_IPAD_GUIDE.md`)**:
