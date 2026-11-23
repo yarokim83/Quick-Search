@@ -1280,9 +1280,12 @@ class Handler(BaseHTTPRequestHandler):
                     p = is_allowed_output_dir(payload.get('path', ''))
                     if p is None or '"' in str(p):
                         return self.send_json_error('변환 출력 폴더를 찾을 수 없습니다.', status=404)
-                    if os.name != 'nt':
-                        return self.send_json_error('이 기능은 Windows PC에서 사용할 수 있습니다.', status=501)
-                    subprocess.Popen(f'explorer.exe "{p}"')
+                    if os.name == 'nt':
+                        subprocess.Popen(f'explorer.exe "{p}"')
+                    elif sys.platform == 'darwin':
+                        subprocess.Popen(['open', str(p)])
+                    else:
+                        return self.send_json_error('이 기능은 Windows 또는 macOS PC에서 사용할 수 있습니다.', status=501)
                     return self.send(json.dumps({'ok': True}).encode())
                 return self.send(b'Not found', status=404)
             except (ValueError, FileNotFoundError) as e:

@@ -10,6 +10,7 @@ windows_config.json
 
 # 임베디드 Python 런타임 및 로컬 백업/배포 폴더/실행 바이너리
 /runtime/
+/.venv_mac/
 /backups/
 /dist/
 *.zip
@@ -25,3 +26,4 @@ __pycache__/
 ~$*
 desktop.ini
 thumbs.db
+.DS_Store

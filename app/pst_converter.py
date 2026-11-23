@@ -7,9 +7,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
-from ctypes import wintypes
 from pathlib import Path
 
 from catalog import BASE, DB, ROOT
@@ -56,15 +56,32 @@ def _find_node_exe():
     found = shutil.which('node')
     if found and Path(found).is_file():
         return found
-    candidates = [
-        Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'nodejs' / 'node.exe',
-        Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'nodejs' / 'node.exe',
-        Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'nodejs' / 'node.exe',
-    ]
+    candidates = []
+    if os.name == 'nt':
+        candidates.extend([
+            Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'nodejs' / 'node.exe',
+            Path(os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')) / 'nodejs' / 'node.exe',
+            Path(os.environ.get('LOCALAPPDATA', '')) / 'Programs' / 'nodejs' / 'node.exe',
+        ])
+    else:
+        candidates.extend([
+            Path('/opt/homebrew/bin/node'),
+            Path('/usr/local/bin/node'),
+            Path('/opt/local/bin/node'),
+            Path('/usr/bin/node'),
+        ])
+        nvm_root = Path.home() / '.nvm' / 'versions' / 'node'
+        if nvm_root.is_dir():
+            try:
+                for ver_dir in sorted(nvm_root.iterdir(), reverse=True):
+                    candidates.append(ver_dir / 'bin' / 'node')
+            except OSError:
+                pass
     for cand in candidates:
         if cand and cand.is_file():
             return str(cand)
-    raise FileNotFoundError('Node.js(node.exe)를 찾을 수 없습니다. Node.js 설치 상태를 확인해 주세요.')
+    hint = 'brew install node 또는 https://nodejs.org 에서 설치해 주세요.' if sys.platform == 'darwin' else 'Node.js 설치 상태를 확인해 주세요.'
+    raise FileNotFoundError(f'Node.js(node)를 찾을 수 없습니다. {hint}')
 
 
 def _validate_pst_path(pst_path):
@@ -79,9 +96,40 @@ def _validate_pst_path(pst_path):
 
 
 def pick_pst_file():
-    """Open a native Windows file dialog to pick a local .pst file without uploading."""
+    """Open a native Windows or macOS file dialog to pick a local .pst file without uploading."""
+    if sys.platform == 'darwin':
+        script = 'POSIX path of (choose file with prompt "변환할 Outlook PST 파일을 선택하세요" of type {"pst"})'
+        try:
+            res = subprocess.run(
+                ['osascript', '-e', script],
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                timeout=300,
+            )
+        except FileNotFoundError:
+            raise RuntimeError('macOS 파일 선택 도구(osascript)를 찾을 수 없습니다.')
+        if res.returncode != 0:
+            err = (res.stderr or '').strip()
+            if '-128' in err or 'User canceled' in err or '취소' in err:
+                return {'ok': True, 'cancelled': True}
+            raise RuntimeError(err or '파일 선택 창을 열 수 없습니다.')
+        chosen = Path((res.stdout or '').strip())
+        if not chosen.is_file() or chosen.suffix.lower() != '.pst':
+            raise ValueError('선택한 파일이 올바른 .pst 파일이 아닙니다.')
+        st = chosen.stat()
+        return {
+            'ok': True,
+            'cancelled': False,
+            'path': str(chosen.resolve()),
+            'name': chosen.name,
+            'size': st.st_size,
+        }
+
     if os.name != 'nt':
-        raise RuntimeError('파일 탐색기 선택 창은 Windows PC에서 사용할 수 있습니다.')
+        raise RuntimeError('파일 탐색기 선택 창은 Windows 또는 macOS PC에서 사용할 수 있습니다.')
+
+    from ctypes import wintypes
 
     class OPENFILENAMEW(ctypes.Structure):
         _fields_ = [
@@ -154,19 +202,29 @@ def _candidate_search_dirs():
         ROOT,
         STAGING_DIR,
     ]
-    for letter in 'CDEFGHIJKLMNOPQRSTUVWXYZ':
-        drv = Path(f'{letter}:\\')
-        try:
-            if drv.is_dir():
-                dirs.extend([
-                    drv,
-                    drv / '아웃룩백업',
-                    drv / 'PST_정리작업',
-                    drv / '메일보관',
-                    drv / 'Outlook',
-                ])
-        except OSError:
-            continue
+    if os.name == 'nt':
+        for letter in 'CDEFGHIJKLMNOPQRSTUVWXYZ':
+            drv = Path(f'{letter}:\\')
+            try:
+                if drv.is_dir():
+                    dirs.extend([
+                        drv,
+                        drv / '아웃룩백업',
+                        drv / 'PST_정리작업',
+                        drv / '메일보관',
+                        drv / 'Outlook',
+                    ])
+            except OSError:
+                continue
+    elif sys.platform == 'darwin':
+        volumes = Path('/Volumes')
+        if volumes.is_dir():
+            try:
+                for vol in volumes.iterdir():
+                    if vol.is_dir() and vol.name != 'Macintosh HD':
+                        dirs.append(vol)
+            except OSError:
+                pass
     seen = set()
     unique = []
     for d in dirs:
@@ -267,15 +325,16 @@ def inspect_pst(pst_path):
     if not WORKER_SCRIPT.is_file():
         raise FileNotFoundError(f'PST 작업 스크립트를 찾을 수 없습니다: {WORKER_SCRIPT}')
 
-    run = subprocess.run(
-        [node_exe, str(WORKER_SCRIPT), '--inspect', str(p)],
-        capture_output=True,
-        text=True,
-        encoding='utf-8',
-        errors='replace',
-        timeout=60,
-        creationflags=CREATE_NO_WINDOW,
-    )
+    run_kwargs = {
+        'capture_output': True,
+        'text': True,
+        'encoding': 'utf-8',
+        'errors': 'replace',
+        'timeout': 60,
+    }
+    if os.name == 'nt':
+        run_kwargs['creationflags'] = CREATE_NO_WINDOW
+    run = subprocess.run([node_exe, str(WORKER_SCRIPT), '--inspect', str(p)], **run_kwargs)
     if run.returncode != 0:
         err_msg = (run.stderr or run.stdout or 'PST 파일 분석에 실패했습니다.').strip()
         raise RuntimeError(err_msg[-600:])
@@ -375,15 +434,19 @@ def start_conversion(pst_path, target_mode='mail_archive', on_complete=None):
         result_data = None
         proc = None
         try:
+            popen_kwargs = {
+                'stdout': subprocess.PIPE,
+                'stderr': subprocess.PIPE,
+                'text': True,
+                'encoding': 'utf-8',
+                'errors': 'replace',
+                'bufsize': 1,
+            }
+            if os.name == 'nt':
+                popen_kwargs['creationflags'] = CREATE_NO_WINDOW
             proc = subprocess.Popen(
                 [node_exe, str(WORKER_SCRIPT), '--convert', str(p), str(output_dir), p.name],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                bufsize=1,
-                creationflags=CREATE_NO_WINDOW,
+                **popen_kwargs,
             )
             with _JOB_LOCK:
                 _ACTIVE_PROC = proc

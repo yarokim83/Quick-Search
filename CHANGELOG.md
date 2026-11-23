@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.7.1] - 2026-11-23
+### Fixed & Improved
+- **macOS 완전 호환성(목록 갱신·PST 메일 변환·Finder 열기) 및 Windows↔Mac 자동 동기화 (`app/pst_converter.py`, `app/server.py`, `scripts/start_mac.sh`, `HPNT_Start_Mac.command`, `MAC_IPAD_GUIDE.md`)**:
+  - `app/pst_converter.py`의 최상단 `from ctypes import wintypes` 및 POSIX `subprocess(..., creationflags=...)` 크래시 원인을 제거하여 macOS에서도 오류 없이 서버 기동 및 PST 변환 실행 가능
+  - macOS용 네이티브 Finder 파일 선택 창(`osascript`), Homebrew/NVM `node` 경로 자동 탐지(`/opt/homebrew/bin/node`, `/usr/local/bin/node`, `~/.nvm`), `/Volumes/*` 외장 드라이브 자동 매칭, 변환 출력 폴더 Finder 열기(`open`) 지원
+  - `scripts/start_mac.sh`에 **시작 시 자동 `git pull --ff-only`**(Windows 수정 → GitHub 푸시 → Mac 실행 시 자동 반영) 및 `.venv_mac` Python 패키지(`openpyxl`, `pypdf`, `python-docx`) 자동 구성 추가
+  - Finder에서 바로 더블클릭 실행 가능한 `HPNT_Start_Mac.command` 추가
+
 ## [1.7.0] - 2026-11-20
 ### Added
 - **Mac 서버 원격 호스팅 및 아이패드(iPad) 접속·PIN 보안 모드 (`app/server.py`, `app/index.html`, `scripts/start_mac.sh`, `MAC_IPAD_GUIDE.md`)**:

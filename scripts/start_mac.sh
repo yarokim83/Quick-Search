@@ -4,6 +4,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${HOME}/.hpnt_search_mac.env"
+NO_UPDATE=0
+for arg in "$@"; do
+  [[ "${arg}" == "--no-update" ]] && NO_UPDATE=1
+done
+
+# Ensure Homebrew / local binaries are on PATH (important when double-clicked via .command)
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
+# 0. Auto-sync latest updates from GitHub (Windows 수정 → GitHub 푸시 → Mac 자동 반영)
+if [[ "${NO_UPDATE}" -eq 0 && -d "${PROJECT_DIR}/.git" ]] && command -v git >/dev/null 2>&1; then
+  if git -C "${PROJECT_DIR}" diff --quiet 2>/dev/null && git -C "${PROJECT_DIR}" diff --cached --quiet 2>/dev/null; then
+    echo "[동기화] GitHub 최신 버전 확인 중..."
+    if git -C "${PROJECT_DIR}" pull --ff-only origin main >/dev/null 2>&1; then
+      CUR_VER="$(cat "${PROJECT_DIR}/VERSION" 2>/dev/null || echo 'unknown')"
+      echo "[동기화] 최신 버전 적용 완료 (v${CUR_VER})"
+    else
+      echo "[동기화] 오프라인 또는 원격 확인 불가 — 현재 로컬 버전으로 실행합니다."
+    fi
+  else
+    echo "[동기화] 로컬 수정 사항이 있어 자동 업데이트를 건너뜁니다."
+  fi
+fi
 
 if [[ -f "${CONFIG_FILE}" ]]; then
   # shellcheck disable=SC1090
@@ -73,10 +95,29 @@ if [[ -n "${HPNT_MAIL_ROOT:-}" ]]; then
   export HPNT_MAIL_ROOT
 fi
 
-PYTHON_BIN="$(command -v python3 || true)"
-if [[ -z "${PYTHON_BIN}" ]]; then
-  echo "[오류] python3를 찾을 수 없습니다. (xcode-select --install 또는 Homebrew로 python3 설치 필요)"
+# 5. Prepare Python runtime (.venv_mac with openpyxl/pypdf/python-docx for full feature parity)
+SYS_PYTHON="$(command -v python3 || true)"
+if [[ -z "${SYS_PYTHON}" ]]; then
+  echo "[오류] python3를 찾을 수 없습니다. (터미널에서 xcode-select --install 또는 brew install python 실행)"
   exit 1
+fi
+
+VENV_DIR="${PROJECT_DIR}/.venv_mac"
+PYTHON_BIN="${VENV_DIR}/bin/python3"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  echo "[환경준비] Mac 전용 Python 가상환경(.venv_mac)을 생성합니다..."
+  "${SYS_PYTHON}" -m venv "${VENV_DIR}"
+fi
+if ! "${PYTHON_BIN}" -c "import openpyxl, pypdf, docx" >/dev/null 2>&1; then
+  echo "[환경준비] 엑셀/PDF/DOCX 본문 색인 및 미리보기 패키지 설치 중..."
+  "${PYTHON_BIN}" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+  "${PYTHON_BIN}" -m pip install --quiet openpyxl pypdf python-docx || echo "[경고] 일부 패키지 설치 실패 — 기본 검색은 정상 동작합니다."
+fi
+
+# 6. Detect Node.js (needed for Outlook .pst conversion)
+NODE_BIN="$(command -v node || true)"
+if [[ -z "${NODE_BIN}" && -d "${HOME}/.nvm/versions/node" ]]; then
+  NODE_BIN="$(ls -1d "${HOME}/.nvm/versions/node"/*/bin/node 2>/dev/null | tail -n 1 || true)"
 fi
 
 WIFI_IP="$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true)"
@@ -84,15 +125,21 @@ TS_IP=""
 if command -v tailscale >/dev/null 2>&1; then
   TS_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
 fi
+APP_VER="$(cat "${PROJECT_DIR}/VERSION" 2>/dev/null || echo 'unknown')"
 
 echo ""
 echo "============================================================"
-echo "  HPNT 업무자료 통합 검색 서버 (macOS / iPad 호스팅)"
+echo "  HPNT 업무자료 통합 검색 서버 v${APP_VER} (macOS / iPad)"
 echo "============================================================"
 echo "  업무 폴더 : ${HPNT_ROOT}"
 echo "  메일 보관 : ${HPNT_MAIL_ROOT:-(미탐지)}"
 echo "  로컬 DB   : ${HPNT_DB}"
 echo "  PIN 잠금  : $([[ -n "${HPNT_ACCESS_PIN}" ]] && echo '사용 중' || echo '미사용')"
+if [[ -n "${NODE_BIN}" ]]; then
+  echo "  PST 변환  : 사용 가능 (Node: ${NODE_BIN})"
+else
+  echo "  PST 변환  : Node.js 미설치 (brew install node 후 사용 가능)"
+fi
 echo "------------------------------------------------------------"
 echo "  [Mac 브라우저]     http://127.0.0.1:${HPNT_PORT}"
 if [[ -n "${WIFI_IP}" ]]; then
