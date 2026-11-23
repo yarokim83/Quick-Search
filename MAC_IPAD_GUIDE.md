@@ -49,7 +49,19 @@ Mac 브라우저(`http://127.0.0.1:8765`)로 접속하면 Windows와 모든 기�
 
 ---
 
-## 5. 외부(회사·이동 중)에서도 아이패드로 접속하려면 (Tailscale)
+## 5. Mac Mini 24시간 무인 상시 서버 등록 (`launchd` 백그라운드 자동실행)
+터미널 창을 열어두지 않고, Mac Mini 재부팅 시 자동 시작 + 매일 새벽 4시 GitHub 최신 버전 자동 반영까지 한 번에 등록하려면:
+```bash
+cd ~/Quick-Search
+./scripts/install_mac_service.sh
+```
+- **상태 확인**: `./scripts/install_mac_service.sh --status`
+- **Windows 수정 직후 Mac 즉시 업데이트**: `./scripts/install_mac_service.sh --restart`
+- **자동실행 해제**: `./scripts/install_mac_service.sh --uninstall`
+
+---
+
+## 6. 외부(회사·이동 중)에서도 아이패드로 접속하려면 (Tailscale)
 1. **Mac**과 **아이패드(App Store)** 양쪽에 무료 **Tailscale** 앱을 설치하고 같은 계정으로 로그인합니다.
 2. Mac에서 `HPNT_Start_Mac.command`를 실행하면 `[아이패드 외부망] http://100.x.x.x:8765` 주소가 자동 출력됩니다.
 3. 아이패드에서 Tailscale을 켠 상태로 해당 주소에 접속하면 집 밖에서도 안전하게 사용할 수 있습니다.

@@ -72,20 +72,24 @@ HPNT_PORT="${HPNT_PORT:-8765}"
 HPNT_HOST="${HPNT_HOST:-0.0.0.0}"
 
 # 4. Access PIN for iPad / remote devices (saved once in ~/.hpnt_search_mac.env)
-if [[ -z "${HPNT_ACCESS_PIN:-}" ]]; then
-  echo ""
-  echo "아이패드 등 원격 기기 접속 시 사용할 PIN 번호(숫자 4~8자리 권장)를 설정해 주세요."
-  echo "(비워두고 Enter를 누르면 PIN 없이 바로 접속합니다)"
-  read -r -s -p "접속 PIN: " HPNT_ACCESS_PIN
-  echo ""
-  {
-    printf 'HPNT_ROOT=%q\n' "${HPNT_ROOT}"
-    [[ -n "${HPNT_MAIL_ROOT:-}" ]] && printf 'HPNT_MAIL_ROOT=%q\n' "${HPNT_MAIL_ROOT}"
-    printf 'HPNT_DB=%q\n' "${HPNT_DB}"
-    printf 'HPNT_PORT=%q\n' "${HPNT_PORT}"
-    printf 'HPNT_HOST=%q\n' "${HPNT_HOST}"
-    printf 'HPNT_ACCESS_PIN=%q\n' "${HPNT_ACCESS_PIN}"
-  } > "${CONFIG_FILE}"
+if [[ -z "${HPNT_ACCESS_PIN:-}" && ! -f "${CONFIG_FILE}" ]]; then
+  if [[ -t 0 ]]; then
+    echo ""
+    echo "아이패드 등 원격 기기 접속 시 사용할 PIN 번호(숫자 4~8자리 권장)를 설정해 주세요."
+    echo "(비워두고 Enter를 누르면 PIN 없이 바로 접속합니다)"
+    read -r -s -p "접속 PIN: " HPNT_ACCESS_PIN
+    echo ""
+  else
+    HPNT_ACCESS_PIN=""
+  fi
+  cat > "${CONFIG_FILE}" <<EOF
+HPNT_ROOT='${HPNT_ROOT}'
+HPNT_MAIL_ROOT='${HPNT_MAIL_ROOT:-}'
+HPNT_DB='${HPNT_DB}'
+HPNT_PORT='${HPNT_PORT}'
+HPNT_HOST='${HPNT_HOST}'
+HPNT_ACCESS_PIN='${HPNT_ACCESS_PIN}'
+EOF
   chmod 600 "${CONFIG_FILE}"
   echo "설정이 ${CONFIG_FILE} 에 저장되었습니다."
 fi

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.3] - 2026-11-23
+### Added
+- **macOS 백그라운드 상시 서버(`launchd`) 자동 설치 및 매일 자동 업데이트 스크립트 (`scripts/install_mac_service.sh`, `scripts/start_mac.sh`, `MAC_IPAD_GUIDE.md`)**:
+  - 구버전 LaunchAgent(`com.hpnt.search.local` / `tailscale`)를 안전하게 백업·중지하고, `com.hpnt.quicksearch` 상시 서비스(`RunAtLoad` + `KeepAlive`) 및 Tailscale Serve(`127.0.0.1:8765`)를 원클릭 등록
+  - 매일 새벽 04:00 GitHub `origin/main`에 새 커밋이 있을 때만 자동 재시작(`git pull`)하는 `com.hpnt.quicksearch.autoupdate` 스케줄 추가
+  - `--status` / `--restart` / `--uninstall` 관리 옵션 지원 및 `start_mac.sh` 비대화형(`launchd`) 실행 안정화
+
 ## [1.7.2] - 2026-11-23
 ### Added & Fixed
 - **Tailscale Serve (`https://*.ts.net`) 리버스 프록시 정식 지원 (`app/server.py`, `scripts/start_mac.sh`)**:

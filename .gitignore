@@ -27,3 +27,4 @@ __pycache__/
 desktop.ini
 thumbs.db
 .DS_Store
+scripts/_mac_autoupdate.sh
