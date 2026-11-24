@@ -165,8 +165,6 @@ def seed():
  state(c,'seeded',1);c.commit();c.close();source.close()
 
 def extract(path):
- from pypdf import PdfReader
- import openpyxl
  sys.path.insert(0,str(BASE/'vendor'))
  p=Path(path);before=p.stat()
  if getattr(before,'st_flags',0)&0x40000000:return {'status':'cloud','parts':[]}
@@ -178,6 +176,7 @@ def extract(path):
   if total+len(text)>500000:partial=True;text=text[:max(0,500000-total)]
   if text.strip():parts.append((loc,text,method));total+=len(text)
  if ext=='.pdf':
+  from pypdf import PdfReader
   reader=PdfReader(p)
   for i,page in enumerate(reader.pages):
    t=page.extract_text() or ''
@@ -185,6 +184,7 @@ def extract(path):
    add(f'페이지 {i+1}',t,'pdf')
    if total>=500000:partial=True;break
  elif ext in ['.xlsx','.xlsm']:
+  import openpyxl
   wb=openpyxl.load_workbook(p,read_only=True,data_only=False,keep_links=False)
   for ws in wb:
    for i,row in enumerate(ws.iter_rows()):
@@ -218,19 +218,29 @@ def extract(path):
  return {'status':('partial' if partial else 'ready') if parts else 'ocr_needed' if ext=='.pdf' else 'empty','parts':parts}
 
 def process(limit):
- c=connect();rows=c.execute("select * from docs where present=1 and status='pending' order by size,id limit ?",(limit,)).fetchall()
- for r in rows:
-  try:
-   state(c,'current',r['path']);c.commit()
-   run=subprocess.run([sys.executable,str(BASE/'catalog.py'),'--extract',r['realpath']],capture_output=True,text=True,timeout=25)
-   if run.returncode:raise ValueError(run.stderr[-700:])
-   obj=json.loads(run.stdout);parts=obj['parts'];body='\n'.join(t for _,t,_ in parts)
-   s=Path(r['realpath']).stat()
-   if (s.st_size,s.st_mtime_ns)!=(r['size'],r['mtime']):continue
-   c.execute('delete from chunks where doc_id=?',(r['id'],));c.executemany('insert into chunks values(?,?,?,?)',[(r['id'],a,b,m) for a,b,m in parts]);c.execute('update docs set body=?,status=?,error=?,indexed_at=? where id=?',(body,obj['status'],'',time.time(),r['id']));reindex(c,r['id'],r['path'],body)
-  except Exception as e:c.execute("update docs set status='failed',error=? where id=?",(str(e)[:700],r['id']))
-  c.commit()
- state(c,'current','');state(c,'last_batch',time.time());c.commit();c.close();return len(rows)
+ c=connect()
+ rows=c.execute("select * from docs where present=1 and status='pending' order by mtime desc, size asc, id desc limit ?",(limit,)).fetchall()
+ if not rows:
+  state(c,'index_running','0');state(c,'current','');c.commit();c.close();return 0
+ state(c,'index_running','1');c.commit()
+ run_kwargs={'capture_output':True,'text':True,'encoding':'utf-8','errors':'replace','timeout':25}
+ if os.name=='nt':
+  run_kwargs['creationflags']=0x08000000
+ try:
+  for r in rows:
+   try:
+    state(c,'current',r['path']);c.commit()
+    run=subprocess.run([sys.executable,'-X','utf8','-B',str(BASE/'catalog.py'),'--extract',r['realpath']],**run_kwargs)
+    if run.returncode:raise ValueError((run.stderr or run.stdout or 'extract failed')[-700:])
+    obj=json.loads(run.stdout);parts=obj['parts'];body='\n'.join(t for _,t,_ in parts)
+    s=Path(r['realpath']).stat()
+    if (s.st_size,s.st_mtime_ns)!=(r['size'],r['mtime']):continue
+    c.execute('delete from chunks where doc_id=?',(r['id'],));c.executemany('insert into chunks values(?,?,?,?)',[(r['id'],a,b,m) for a,b,m in parts]);c.execute('update docs set body=?,status=?,error=?,indexed_at=? where id=?',(body,obj['status'],'',time.time(),r['id']));reindex(c,r['id'],r['path'],body)
+   except Exception as e:c.execute("update docs set status='failed',error=? where id=?",(str(e)[:700],r['id']))
+   c.commit()
+ finally:
+  state(c,'index_running','0');state(c,'current','');state(c,'last_batch',time.time());c.commit();c.close()
+ return len(rows)
 if __name__=='__main__':
  a=argparse.ArgumentParser();a.add_argument('--extract');a.add_argument('--batch',type=int,default=100);a.add_argument('--scan-only',action='store_true');args=a.parse_args()
  if args.extract:

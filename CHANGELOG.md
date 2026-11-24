@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.8.0] - 2026-11-24
+### Added & Improved
+- **백그라운드 자동 본문 색인 (최신 수정 파일 우선 · 소량 배치 안전 처리) (`app/catalog.py`, `app/server.py`)**:
+  - 백그라운드 `worker()`가 10분 주기 목록 스캔(`scan`) 사이에 **최신 수정 파일 우선(`mtime DESC`)으로 한 번에 20개씩, 30초 간격**으로 엑셀(`.xlsx/.xlsm/.xls`)·PDF·Word(`.docx`)·텍스트 파일의 본문을 자동 추출(`process`)하고 백그라운드에서 캐시·2-gram 역인덱스를 갱신 (`HPNT_INDEX_BATCH`, `HPNT_INDEX_INTERVAL` 환경변수로 조절 가능, `0` 설정 시 비활성화)
+  - `app/catalog.py` 추출 서브프로세스에 Windows 콘솔 창 깜빡임 방지(`CREATE_NO_WINDOW`) 및 UTF-8 강제(`-X utf8`, `encoding='utf-8'`) 적용, 포맷별 지연 import(`pypdf`, `openpyxl`)로 크로스 플랫폼 안정성 강화
+
 ## [1.7.3] - 2026-11-23
 ### Added
 - **macOS 백그라운드 상시 서버(`launchd`) 자동 설치 및 매일 자동 업데이트 스크립트 (`scripts/install_mac_service.sh`, `scripts/start_mac.sh`, `MAC_IPAD_GUIDE.md`)**:

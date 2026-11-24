@@ -68,6 +68,9 @@ AUTH_COOKIE_NAME = 'hpnt_auth'
 _LOGIN_FAILS_LOCK = threading.Lock()
 _LOGIN_FAILS = {}
 scan_lock = threading.Lock()
+index_lock = threading.Lock()
+INDEX_BATCH_SIZE = max(0, int(os.environ.get('HPNT_INDEX_BATCH', '20') or '20'))
+INDEX_INTERVAL_SEC = max(10, int(os.environ.get('HPNT_INDEX_INTERVAL', '30') or '30'))
 _LIVE_SEQ_LOCK = threading.Lock()
 _LIVE_SEARCH_SEQ = 0
 _CATALOG_LOCK = threading.Lock()
@@ -955,10 +958,43 @@ def run_scan_once():
     return True
 
 
+def run_index_batch(limit=INDEX_BATCH_SIZE):
+    if limit <= 0 or scan_lock.locked():
+        return 0
+    if not index_lock.acquire(blocking=False):
+        return 0
+    try:
+        if not ROOT.is_dir():
+            return 0
+        count = process(limit)
+        if count > 0:
+            with _CATALOG_LOCK:
+                _CATALOG_CACHE['checked_at'] = 0.0
+            get_catalog_cache()
+        return count
+    except Exception:
+        return 0
+    finally:
+        index_lock.release()
+
+
 def worker():
+    scan_interval = 600.0
     while True:
         run_scan_once()
-        time.sleep(600)
+        next_scan_at = time.monotonic() + scan_interval
+        if INDEX_BATCH_SIZE > 0:
+            while time.monotonic() < next_scan_at:
+                done = run_index_batch(INDEX_BATCH_SIZE)
+                remaining = next_scan_at - time.monotonic()
+                if remaining <= 0:
+                    break
+                if done == 0:
+                    time.sleep(remaining)
+                    break
+                time.sleep(min(float(INDEX_INTERVAL_SEC), remaining))
+        else:
+            time.sleep(scan_interval)
 
 
 def _auth_token():
