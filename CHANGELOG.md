@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.1] - 2026-11-25
+### Fixed & Improved
+- **대량 본문 색인(130만 청크 이상) 시 메모리 폭증(5.76GB) 및 검색 타임아웃 버그 긴급 수정 (`app/server.py`, `app/catalog.py`)**:
+  - `chunks_by_doc` 전체 메모리 적재를 제거하고 SQLite `chunk_doc` 인덱스 기반 온디맨드 로더(`_ChunkLoader`) + 스니펫 첫 완전 일치 조기 종료로 전환하여 메모리 사용량을 대폭 절감
+  - 백그라운드 자동 색인 배치 완료 시 전체 4.6만 건 캐시·2-gram 역인덱스를 매번 재구축하던 병목을 제거하고, 방금 색인된 소수 문서만 제자리(in-place) 반영(`_apply_indexed_docs_inplace`)하도록 변경
+  - `docs` 2-gram 역인덱스 구축을 메일과 동일하게 백그라운드 비동기 스레드(`_schedule_docs_bigram_build`)로 전환하여 서버 기동·갱신 직후에도 검색 응답 블로킹 제거
+  - 기본 백그라운드 색인 배치를 `15건 / 45초 간격`으로 완화하여 시스템·Google Drive 부하 최소화
+
 ## [1.8.0] - 2026-11-24
 ### Added & Improved
 - **백그라운드 자동 본문 색인 (최신 수정 파일 우선 · 소량 배치 안전 처리) (`app/catalog.py`, `app/server.py`)**:

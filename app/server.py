@@ -1,4 +1,5 @@
 import sqlite3, re, json, mimetypes, os, shutil, time, threading, subprocess, sys, zipfile, ctypes, hashlib, hmac, socket
+from array import array
 from collections import Counter
 from http.cookies import SimpleCookie
 from itertools import chain
@@ -69,15 +70,15 @@ _LOGIN_FAILS_LOCK = threading.Lock()
 _LOGIN_FAILS = {}
 scan_lock = threading.Lock()
 index_lock = threading.Lock()
-INDEX_BATCH_SIZE = max(0, int(os.environ.get('HPNT_INDEX_BATCH', '20') or '20'))
-INDEX_INTERVAL_SEC = max(10, int(os.environ.get('HPNT_INDEX_INTERVAL', '30') or '30'))
+INDEX_BATCH_SIZE = max(0, int(os.environ.get('HPNT_INDEX_BATCH', '15') or '15'))
+INDEX_INTERVAL_SEC = max(10, int(os.environ.get('HPNT_INDEX_INTERVAL', '45') or '45'))
 _LIVE_SEQ_LOCK = threading.Lock()
 _LIVE_SEARCH_SEQ = 0
 _CATALOG_LOCK = threading.Lock()
 _CATALOG_CACHE = {
     'sig': None, 'checked_at': 0.0,
-    'docs': [], 'aliases': [], 'folders': [], 'chunks_by_doc': {},
-    'docs_bidx': None, 'aliases_bidx': None, 'folders_bidx': None,
+    'docs': [], 'aliases': [], 'folders': [], 'doc_pos_by_id': {},
+    'docs_bidx': None, 'aliases_bidx': None, 'folders_bidx': None, 'bidx_sig': None,
 }
 
 QC_PREFIX = r'(?<![a-z0-9])q/?c[ \t]*[-‐‑–]?[ \t]*'
@@ -168,8 +169,91 @@ def _narrow_rows_by_bigrams(rows, bidx, bigrams):
     return [rows[i] for i in sorted(cand)]
 
 
+def _schedule_docs_bigram_build(sig, docs, aliases, folders):
+    with _CATALOG_LOCK:
+        if _CATALOG_CACHE['bidx_sig'] == sig:
+            return
+        _CATALOG_CACHE['bidx_sig'] = sig
+
+    def _worker():
+        try:
+            docs_bidx = build_bigram_index(docs)
+            aliases_bidx = build_bigram_index(aliases)
+            folders_bidx = build_bigram_index(folders)
+        except Exception:
+            return
+        with _CATALOG_LOCK:
+            if _CATALOG_CACHE['docs'] is docs:
+                _CATALOG_CACHE['docs_bidx'] = docs_bidx
+                _CATALOG_CACHE['aliases_bidx'] = aliases_bidx
+                _CATALOG_CACHE['folders_bidx'] = folders_bidx
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _query_catalog_sig(c):
+    cnt, max_idx, max_doc_id = c.execute(
+        'select count(*), coalesce(max(indexed_at), 0), coalesce(max(id), 0) from docs where present=1'
+    ).fetchone()
+    has_folders_tbl = bool(c.execute("select 1 from sqlite_master where type='table' and name='folders'").fetchone())
+    if has_folders_tbl:
+        folder_cnt, max_folder_id = c.execute(
+            'select count(*), coalesce(max(id), 0) from folders where present=1'
+        ).fetchone()
+    else:
+        folder_cnt, max_folder_id = 0, 0
+    return (cnt, max_idx, max_doc_id, folder_cnt, max_folder_id), has_folders_tbl
+
+
+def _apply_indexed_docs_inplace(doc_ids):
+    """Patch newly indexed doc rows directly into the in-memory cache + 2-gram index without a full rebuild."""
+    if not doc_ids:
+        return False
+    with _CATALOG_LOCK:
+        if _CATALOG_CACHE['sig'] is None or not _CATALOG_CACHE['docs']:
+            return False
+
+    c = connect()
+    try:
+        placeholders = ','.join('?' for _ in doc_ids)
+        rows = c.execute(
+            f'select id,path,category,status,extension,size,mtime,body from docs where present=1 and id in ({placeholders})',
+            doc_ids,
+        ).fetchall()
+        new_sig, _ = _query_catalog_sig(c)
+    finally:
+        c.close()
+
+    entries = [(r['id'], _build_cache_entry(r)) for r in rows]
+    with _CATALOG_LOCK:
+        docs = _CATALOG_CACHE['docs']
+        pos_map = _CATALOG_CACHE['doc_pos_by_id']
+        docs_bidx = _CATALOG_CACHE['docs_bidx']
+        if not docs or not pos_map:
+            return False
+        for doc_id, new_entry in entries:
+            pos = pos_map.get(doc_id)
+            if pos is None or pos >= len(docs):
+                continue
+            old_t = docs[pos]['text_all']
+            docs[pos] = new_entry
+            if docs_bidx is not None:
+                new_t = new_entry['text_all']
+                old_bgs = {old_t[j:j + 2] for j in range(len(old_t) - 1)} if len(old_t) >= 2 else set()
+                new_bgs = ({new_t[j:j + 2] for j in range(len(new_t) - 1)} - old_bgs) if len(new_t) >= 2 else set()
+                for bg in new_bgs:
+                    arr = docs_bidx.get(bg)
+                    if arr is None:
+                        arr = array('I')
+                        docs_bidx[bg] = arr
+                    arr.append(pos)
+        _CATALOG_CACHE['sig'] = new_sig
+        _CATALOG_CACHE['checked_at'] = time.monotonic()
+    return True
+
+
 def get_catalog_cache_with_index(c=None, force=False):
-    """Return normalized in-memory document, alias, folder, chunk, and bigram caches, rebuilding on DB change."""
+    """Return normalized in-memory document, alias, folder, and bigram caches, rebuilding only on DB change."""
     now = time.monotonic()
     with _CATALOG_LOCK:
         if not force and _CATALOG_CACHE['sig'] is not None and (now - _CATALOG_CACHE['checked_at']) < 30.0:
@@ -177,7 +261,6 @@ def get_catalog_cache_with_index(c=None, force=False):
                 _CATALOG_CACHE['docs'],
                 _CATALOG_CACHE['aliases'],
                 _CATALOG_CACHE['folders'],
-                _CATALOG_CACHE['chunks_by_doc'],
                 _CATALOG_CACHE['docs_bidx'],
                 _CATALOG_CACHE['aliases_bidx'],
                 _CATALOG_CACHE['folders_bidx'],
@@ -187,30 +270,26 @@ def get_catalog_cache_with_index(c=None, force=False):
     if own_conn:
         c = connect()
     try:
-        cnt, max_idx, max_doc_id = c.execute(
-            'select count(*), coalesce(max(indexed_at), 0), coalesce(max(id), 0) from docs where present=1'
-        ).fetchone()
-        has_folders_tbl = bool(c.execute("select 1 from sqlite_master where type='table' and name='folders'").fetchone())
-        if has_folders_tbl:
-            folder_cnt, max_folder_id = c.execute(
-                'select count(*), coalesce(max(id), 0) from folders where present=1'
-            ).fetchone()
-        else:
-            folder_cnt, max_folder_id = 0, 0
-        sig = (cnt, max_idx, max_doc_id, folder_cnt, max_folder_id)
+        sig, has_folders_tbl = _query_catalog_sig(c)
 
         with _CATALOG_LOCK:
             if not force and _CATALOG_CACHE['sig'] == sig:
                 _CATALOG_CACHE['checked_at'] = now
-                return (
-                    _CATALOG_CACHE['docs'],
-                    _CATALOG_CACHE['aliases'],
-                    _CATALOG_CACHE['folders'],
-                    _CATALOG_CACHE['chunks_by_doc'],
-                    _CATALOG_CACHE['docs_bidx'],
-                    _CATALOG_CACHE['aliases_bidx'],
-                    _CATALOG_CACHE['folders_bidx'],
-                )
+                docs = _CATALOG_CACHE['docs']
+                aliases = _CATALOG_CACHE['aliases']
+                folders = _CATALOG_CACHE['folders']
+                docs_bidx = _CATALOG_CACHE['docs_bidx']
+                aliases_bidx = _CATALOG_CACHE['aliases_bidx']
+                folders_bidx = _CATALOG_CACHE['folders_bidx']
+                need_bg = docs_bidx is None and bool(docs)
+            else:
+                need_bg = False
+                docs = None
+
+        if docs is not None:
+            if need_bg:
+                _schedule_docs_bigram_build(sig, docs, aliases, folders)
+            return docs, aliases, folders, docs_bidx, aliases_bidx, folders_bidx
 
         docs = [
             _build_cache_entry(r)
@@ -229,18 +308,7 @@ def get_catalog_cache_with_index(c=None, force=False):
             _build_folder_entry(r)
             for r in c.execute('select id,path,mtime from folders where present=1')
         ] if has_folders_tbl else []
-        chunks_by_doc = {}
-        for doc_id, loc, text, method in c.execute('select doc_id,location,text,method from chunks order by rowid'):
-            chunks_by_doc.setdefault(doc_id, []).append({
-                'location': loc,
-                'text': text,
-                'method': method,
-                'text_clean': clean(text),
-            })
-
-        docs_bidx = build_bigram_index(docs)
-        aliases_bidx = build_bigram_index(aliases)
-        folders_bidx = build_bigram_index(folders)
+        doc_pos_by_id = {d['id']: i for i, d in enumerate(docs)}
 
         with _CATALOG_LOCK:
             _CATALOG_CACHE['sig'] = sig
@@ -248,20 +316,64 @@ def get_catalog_cache_with_index(c=None, force=False):
             _CATALOG_CACHE['docs'] = docs
             _CATALOG_CACHE['aliases'] = aliases
             _CATALOG_CACHE['folders'] = folders
-            _CATALOG_CACHE['chunks_by_doc'] = chunks_by_doc
-            _CATALOG_CACHE['docs_bidx'] = docs_bidx
-            _CATALOG_CACHE['aliases_bidx'] = aliases_bidx
-            _CATALOG_CACHE['folders_bidx'] = folders_bidx
-        return docs, aliases, folders, chunks_by_doc, docs_bidx, aliases_bidx, folders_bidx
+            _CATALOG_CACHE['doc_pos_by_id'] = doc_pos_by_id
+            _CATALOG_CACHE['docs_bidx'] = None
+            _CATALOG_CACHE['aliases_bidx'] = None
+            _CATALOG_CACHE['folders_bidx'] = None
+            _CATALOG_CACHE['bidx_sig'] = None
+        _schedule_docs_bigram_build(sig, docs, aliases, folders)
+        return docs, aliases, folders, None, None, None
     finally:
         if own_conn:
             c.close()
 
 
+class _ChunkLoader:
+    """On-demand SQLite chunk loader using chunk_doc index; avoids holding millions of chunks in RAM."""
+
+    def __init__(self):
+        self._conn = None
+        self._cache = {}
+
+    def get(self, doc_id):
+        cached = self._cache.get(doc_id)
+        if cached is not None:
+            return cached
+        if self._conn is None:
+            self._conn = connect()
+        rows = [
+            {
+                'location': loc,
+                'text': text,
+                'method': method,
+            }
+            for loc, text, method in self._conn.execute(
+                'select location,text,method from chunks where doc_id=? order by rowid',
+                (doc_id,),
+            )
+        ]
+        self._cache[doc_id] = rows
+        return rows
+
+    def close(self):
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 def get_catalog_cache(c=None, force=False):
-    """Return normalized in-memory document, alias, folder, and chunk caches."""
-    docs, aliases, folders, chunks_by_doc, _, _, _ = get_catalog_cache_with_index(c=c, force=force)
-    return docs, aliases, folders, chunks_by_doc
+    """Return normalized in-memory document, alias, and folder caches."""
+    docs, aliases, folders, _, _, _ = get_catalog_cache_with_index(c=c, force=force)
+    return docs, aliases, folders
 
 
 def search_terms(query):
@@ -478,6 +590,15 @@ def compute_facets(hits, active_folder=''):
 
 
 def find(query='', category='', scope='all', ext_filter='', sort_by='score', folder='', offset=0, limit=DEFAULT_LIMIT, exclude_mail=False, live_seq=0):
+    with _ChunkLoader() as chunk_loader:
+        return _find_impl(
+            query=query, category=category, scope=scope, ext_filter=ext_filter,
+            sort_by=sort_by, folder=folder, offset=offset, limit=limit,
+            exclude_mail=exclude_mail, live_seq=live_seq, chunk_loader=chunk_loader,
+        )
+
+
+def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score', folder='', offset=0, limit=DEFAULT_LIMIT, exclude_mail=False, live_seq=0, chunk_loader=None):
     parsed = parse_advanced_query(query)
     if '메일보관/' in parsed['excludes']:
         exclude_mail = True
@@ -588,7 +709,7 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         return None
 
     if need_docs:
-        docs_cache, aliases_cache, folders_cache, chunks_by_doc, docs_bidx, aliases_bidx, folders_bidx = get_catalog_cache_with_index()
+        docs_cache, aliases_cache, folders_cache, docs_bidx, aliases_bidx, folders_bidx = get_catalog_cache_with_index()
         if query_bigrams:
             docs_cand = _narrow_rows_by_bigrams(docs_cache, docs_bidx, query_bigrams)
             if scope == 'body':
@@ -600,7 +721,6 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
         else:
             doc_rows = docs_cache if scope == 'body' else chain(docs_cache, aliases_cache, folders_cache)
     else:
-        chunks_by_doc = {}
         doc_rows = ()
 
     if need_mails:
@@ -734,7 +854,13 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                     if period['matches']:
                         hit['score'] += 100
                         priority_ids.add(doc_id)
-            doc_chunks = chunks_by_doc.get(doc_id, ())
+            need_chunks = (
+                bool(record)
+                or (bool(drawing_numbers) and r['extension'] == '.pdf' and r['status'] == 'partial')
+                or (bool(qc_title_patterns) and r['extension'] == '.pdf' and r['status'] == 'partial' and bool(re.search(r'(?<![a-z0-9])qc(?![a-z0-9])', path)))
+                or (not record and bool(context_patterns) and bool(body) and all(pattern.search(body) for pattern in context_patterns))
+            )
+            doc_chunks = chunk_loader.get(doc_id) if (need_chunks and r['status'] in ('ready', 'partial')) else ()
             if record:
                 proof = record_evidence(doc_chunks, *record)
                 if proof:
@@ -749,7 +875,10 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                 for chunk in doc_chunks:
                     if chunk['method'] != 'vision-title':
                         continue
-                    chunk_text = chunk['text_clean']
+                    chunk_text = chunk.get('text_clean')
+                    if chunk_text is None:
+                        chunk_text = clean(chunk['text'])
+                        chunk['text_clean'] = chunk_text
                     title_numbers = {
                         DRAWING_SPACED_NUMBER.sub(r'\1\2', number)
                         for number in DRAWING_TITLE_NUMBER.findall(chunk_text)
@@ -767,13 +896,16 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                 for chunk in doc_chunks:
                     if chunk['method'] != 'vision-title':
                         continue
-                    if all(pattern.search(chunk['text_clean']) for pattern in qc_title_patterns):
+                    if all(pattern.search(chunk.get('text_clean') or clean(chunk['text'])) for pattern in qc_title_patterns):
                         drawing_chunks[doc_id] = chunk
                         priority_ids.add(doc_id)
                         break
             if not record and context_patterns and all(pattern.search(body) for pattern in context_patterns):
                 for chunk in doc_chunks:
-                    chunk_text = chunk['text_clean']
+                    chunk_text = chunk.get('text_clean')
+                    if chunk_text is None:
+                        chunk_text = clean(chunk['text'])
+                        chunk['text_clean'] = chunk_text
                     if all(pattern.search(chunk_text) for pattern in context_patterns):
                         context_chunks[doc_id] = chunk
                         break
@@ -835,7 +967,7 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
             original['original_available'] = original['extension'] in ORIGINAL_EXTENSIONS
         if h.get('method') == 'record':
             continue
-        chunks = chunks_by_doc.get(h['id'], ())
+        chunks = chunk_loader.get(h['id']) if (not browse_mode and h['status'] in ('ready', 'partial')) else ()
         if h.get('period_label'):
             for chunk in chunks:
                 if chunk['location'].strip().startswith('보고자료') and '장비 고장 통계' in chunk['text']:
@@ -845,12 +977,24 @@ def find(query='', category='', scope='all', ext_filter='', sort_by='score', fol
                         break
         matching = []
         row_length_patterns = length_patterns.values() if h['id'] in split_length_rows else ()
+        drawing = drawing_chunks.get(h['id'])
+        context = drawing or context_chunks.get(h['id'])
+        need_all_pat = len(all_snippet_patterns)
         for chunk in chunks:
-            chunk_text = chunk['text_clean']
+            if context is not None and chunk is not context and matching:
+                continue
+            chunk_text = chunk.get('text_clean')
+            if chunk_text is None:
+                chunk_text = clean(chunk['text'])
+                chunk['text_clean'] = chunk_text
             positions = [match.start() for pattern in all_snippet_patterns if (match := pattern.search(chunk_text))]
             length_positions = [match.start() for pattern in row_length_patterns if (match := pattern.search(chunk_text))]
             if positions:
                 matching.append((len(positions), len(length_positions), min(length_positions or positions), chunk))
+                if context is None and not row_length_patterns and len(positions) >= need_all_pat:
+                    break
+                if context is not None and chunk is context:
+                    break
         if matching:
             drawing = drawing_chunks.get(h['id'])
             context = drawing or context_chunks.get(h['id'])
@@ -966,11 +1110,12 @@ def run_index_batch(limit=INDEX_BATCH_SIZE):
     try:
         if not ROOT.is_dir():
             return 0
-        count = process(limit)
-        if count > 0:
-            with _CATALOG_LOCK:
-                _CATALOG_CACHE['checked_at'] = 0.0
-            get_catalog_cache()
+        count, updated_ids = process(limit, return_ids=True)
+        if updated_ids:
+            if not _apply_indexed_docs_inplace(updated_ids):
+                with _CATALOG_LOCK:
+                    _CATALOG_CACHE['checked_at'] = 0.0
+                get_catalog_cache()
         return count
     except Exception:
         return 0

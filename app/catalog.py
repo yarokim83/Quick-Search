@@ -217,15 +217,17 @@ def extract(path):
  if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('처리 중 파일 변경: 다음 갱신 필요')
  return {'status':('partial' if partial else 'ready') if parts else 'ocr_needed' if ext=='.pdf' else 'empty','parts':parts}
 
-def process(limit):
+def process(limit, return_ids=False):
  c=connect()
  rows=c.execute("select * from docs where present=1 and status='pending' order by mtime desc, size asc, id desc limit ?",(limit,)).fetchall()
  if not rows:
-  state(c,'index_running','0');state(c,'current','');c.commit();c.close();return 0
+  state(c,'index_running','0');state(c,'current','');c.commit();c.close()
+  return (0, []) if return_ids else 0
  state(c,'index_running','1');c.commit()
  run_kwargs={'capture_output':True,'text':True,'encoding':'utf-8','errors':'replace','timeout':25}
  if os.name=='nt':
   run_kwargs['creationflags']=0x08000000
+ updated_ids=[]
  try:
   for r in rows:
    try:
@@ -236,11 +238,14 @@ def process(limit):
     s=Path(r['realpath']).stat()
     if (s.st_size,s.st_mtime_ns)!=(r['size'],r['mtime']):continue
     c.execute('delete from chunks where doc_id=?',(r['id'],));c.executemany('insert into chunks values(?,?,?,?)',[(r['id'],a,b,m) for a,b,m in parts]);c.execute('update docs set body=?,status=?,error=?,indexed_at=? where id=?',(body,obj['status'],'',time.time(),r['id']));reindex(c,r['id'],r['path'],body)
-   except Exception as e:c.execute("update docs set status='failed',error=? where id=?",(str(e)[:700],r['id']))
+    updated_ids.append(r['id'])
+   except Exception as e:
+    c.execute("update docs set status='failed',error=? where id=?",(str(e)[:700],r['id']))
+    updated_ids.append(r['id'])
    c.commit()
  finally:
   state(c,'index_running','0');state(c,'current','');state(c,'last_batch',time.time());c.commit();c.close()
- return len(rows)
+ return (len(rows), updated_ids) if return_ids else len(rows)
 if __name__=='__main__':
  a=argparse.ArgumentParser();a.add_argument('--extract');a.add_argument('--batch',type=int,default=100);a.add_argument('--scan-only',action='store_true');args=a.parse_args()
  if args.extract:
