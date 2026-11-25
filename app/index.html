@@ -292,12 +292,12 @@
   /* 3-Pane Workspace */
   .workspace {
     display: grid;
-    grid-template-columns: 195px 1fr 350px;
+    grid-template-columns: 185px minmax(0, 1fr) minmax(460px, 42%);
     gap: 8px;
     align-items: start;
   }
-  .workspace.no-inspector { grid-template-columns: 195px 1fr; }
-  .workspace.no-sidebar { grid-template-columns: 1fr 350px; }
+  .workspace.no-inspector { grid-template-columns: 185px minmax(0, 1fr); }
+  .workspace.no-sidebar { grid-template-columns: minmax(0, 1fr) minmax(480px, 48%); }
   .workspace.no-sidebar.no-inspector { grid-template-columns: 1fr; }
 
   .pane {
@@ -2136,19 +2136,6 @@ function openInspector(file) {
       }
       addTab('attachments', `📎 첨부 (${file.attachments.length})`, attSec);
     }
-  } else {
-    if (file.snippet && file.method !== 'filename' && file.method !== 'browse' && file.method !== 'folder') {
-      const sec = node('div', '', 'insp-section');
-      if (file.evidence_label) sec.append(node('p', file.evidence_label, 'row-sub'));
-      const pre = node('pre', '', 'snippet-pre');
-      pre.style.maxHeight = '320px';
-      appendHighlighted(pre, cleanExtractedText(file.snippet, file.method, false), rx);
-      sec.append(pre);
-      addTab('snippet', '🔍 검색 일치', sec);
-    }
-    if (hasDetail) {
-      addTab('detail', '📝 추출 텍스트', buildDetailWidget(file, terms));
-    }
   }
 
   if (file.related) {
@@ -2256,7 +2243,7 @@ function renderResultsOnly() {
     const tbl = document.createElement('table');
     tbl.className = 'result-table';
     const colgroup = document.createElement('colgroup');
-    ['28px', '54px', '', '145px', '64px', '76px', '82px'].forEach(w => {
+    ['28px', '54px', '', '64px', '76px', '82px'].forEach(w => {
       const col = document.createElement('col');
       if (w) col.style.width = w;
       colgroup.append(col);
@@ -2265,7 +2252,7 @@ function renderResultsOnly() {
 
     const thead = document.createElement('thead');
     const hr = document.createElement('tr');
-    ['', '형식', '파일명 · 경로', '검색 근거', '크기', '수정일', '실행'].forEach((col, i) => {
+    ['', '형식', '파일명 · 경로', '크기', '수정일', '실행'].forEach((col, i) => {
       const th = node('th', col);
       if (i === 0 || i === 1) { th.style.textAlign = 'center'; th.style.paddingLeft = '2px'; th.style.paddingRight = '2px'; }
       hr.append(th);
@@ -2325,25 +2312,6 @@ function renderResultsOnly() {
       renderPathSegments(pathDiv, h.path, rx);
       tdName.append(titleDiv, pathDiv);
 
-      // Snippet summary
-      const tdEv = document.createElement('td');
-      const isFilenameOnly = h.snippet === '검색어가 파일명 또는 경로에 있습니다.';
-      const evText = h.kind === 'folder' ? '업무 폴더' : isFilenameOnly ? '파일명·경로' : (h.evidence_label || h.location || '');
-      const evLabel = node('div', evText, 'row-sub');
-      evLabel.style.fontWeight = '600';
-      evLabel.style.color = (!isFilenameOnly && (h.status === 'partial' || h.status === 'ready')) ? 'var(--brand-dark)' : 'var(--muted)';
-      evLabel.title = evText;
-      tdEv.append(evLabel);
-      if (!isFilenameOnly && h.snippet && h.method !== 'browse' && h.method !== 'folder') {
-        const shortSnip = h.snippet.replace(/\s+/g, ' ').trim();
-        if (shortSnip) {
-          const snip = node('div', '', 'row-sub');
-          snip.title = shortSnip.slice(0, 260);
-          appendHighlighted(snip, shortSnip.slice(0, 120), rx);
-          tdEv.append(snip);
-        }
-      }
-
       // Size & Date
       const tdSize = node('td', h.kind === 'folder' ? '-' : formatSize(h.size));
       tdSize.style.cssText = 'white-space:nowrap;font-size:11.5px;color:var(--muted);';
@@ -2389,7 +2357,7 @@ function renderResultsOnly() {
       }
       tdAct.append(act);
 
-      tr.append(tdStar, tdExt, tdName, tdEv, tdSize, tdDate, tdAct);
+      tr.append(tdStar, tdExt, tdName, tdSize, tdDate, tdAct);
       tr.onclick = e => {
         if (e.target.closest('button.crumb-link[data-folder-path]')) return;
         openInspector(h);

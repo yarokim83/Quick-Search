@@ -1,6 +1,6 @@
-import sqlite3, re, json, mimetypes, os, shutil, time, threading, subprocess, sys, zipfile, ctypes, hashlib, hmac, socket
+import sqlite3, re, json, mimetypes, os, shutil, time, threading, subprocess, sys, zipfile, ctypes, hashlib, hmac, socket, datetime, math
 from array import array
-from collections import Counter
+from collections import Counter, OrderedDict
 from http.cookies import SimpleCookie
 from itertools import chain
 from pathlib import Path
@@ -75,6 +75,8 @@ INDEX_INTERVAL_SEC = max(10, int(os.environ.get('HPNT_INDEX_INTERVAL', '45') or 
 _LIVE_SEQ_LOCK = threading.Lock()
 _LIVE_SEARCH_SEQ = 0
 _LAST_SEARCH_AT = 0.0
+_EXCEL_CACHE_LOCK = threading.Lock()
+_EXCEL_PREVIEW_CACHE = OrderedDict()
 _CATALOG_LOCK = threading.Lock()
 _CATALOG_CACHE = {
     'sig': None, 'checked_at': 0.0,
@@ -1303,6 +1305,100 @@ def worker():
             time.sleep(scan_interval)
 
 
+def _excel_cell_text(v):
+    if v is None:
+        return ''
+    if isinstance(v, (datetime.datetime, datetime.date, datetime.time)):
+        return v.isoformat(sep=' ') if isinstance(v, datetime.datetime) else v.isoformat()
+    if isinstance(v, float) and not math.isfinite(v):
+        return ''
+    return str(v)[:500]
+
+
+def _render_excel_preview_bytes(p, st, sheet_idx, start_row):
+    """Fast in-process Excel sheet preview with bounded LRU cache (avoids subprocess cold-start)."""
+    cache_key = (str(p), st.st_size, st.st_mtime_ns, sheet_idx, start_row)
+    with _EXCEL_CACHE_LOCK:
+        cached = _EXCEL_PREVIEW_CACHE.get(cache_key)
+        if cached is not None:
+            _EXCEL_PREVIEW_CACHE.move_to_end(cache_key)
+            return cached
+
+    vendor_dir = str(BASE / 'vendor')
+    if vendor_dir not in sys.path:
+        sys.path.insert(0, vendor_dir)
+
+    size = 50
+    cols = 30
+    ext = p.suffix.lower()
+    if ext in ('.xlsx', '.xlsm'):
+        import openpyxl
+        with zipfile.ZipFile(p) as z:
+            images = [
+                x for x in z.infolist()
+                if x.filename.startswith('xl/media/')
+                and Path(x.filename).suffix.lower() in ('.png', '.jpg', '.jpeg', '.gif')
+                and x.file_size <= 10000000
+            ][:12]
+        wb = openpyxl.load_workbook(p, read_only=True, data_only=True, keep_links=False)
+        try:
+            names = wb.sheetnames[:500]
+            if sheet_idx >= len(names):
+                raise IndexError('sheet')
+            ws = wb[names[sheet_idx]]
+            total = ws.max_row or 0
+            rows = [
+                [_excel_cell_text(v) for v in row]
+                for row in ws.iter_rows(min_row=start_row, max_row=start_row + size - 1, max_col=cols, values_only=True)
+            ]
+        finally:
+            wb.close()
+    elif ext == '.xls':
+        import xlrd
+        images = []
+        wb = xlrd.open_workbook(str(p), on_demand=True)
+        try:
+            names = wb.sheet_names()[:500]
+            if sheet_idx >= len(names):
+                raise IndexError('sheet')
+            ws = wb.sheet_by_index(sheet_idx)
+            total = ws.nrows
+            rows = [
+                [_excel_cell_text(ws.cell_value(i, j)) if j < ws.ncols else '' for j in range(cols)]
+                for i in range(start_row - 1, min(start_row - 1 + size, total))
+            ]
+        finally:
+            wb.release_resources()
+    else:
+        raise ValueError('unsupported')
+
+    if (p.stat().st_size, p.stat().st_mtime_ns) != (st.st_size, st.st_mtime_ns):
+        raise ValueError('file changed')
+
+    while rows and not any(rows[-1]):
+        rows.pop()
+    width = max((max((i + 1 for i, x in enumerate(r) if x), default=0) for r in rows), default=0)
+    width = max(width, 1)
+    rows = [r[:width] for r in rows]
+
+    payload = json.dumps({
+        'sheets': names,
+        'sheet': sheet_idx,
+        'start': start_row,
+        'rows': rows,
+        'has_more': total > start_row + size - 1,
+        'column_limit': cols,
+        'page_size': size,
+        'images': len(images),
+    }, ensure_ascii=False).encode('utf-8')
+
+    with _EXCEL_CACHE_LOCK:
+        _EXCEL_PREVIEW_CACHE[cache_key] = payload
+        while len(_EXCEL_PREVIEW_CACHE) > 64:
+            _EXCEL_PREVIEW_CACHE.popitem(last=False)
+    return payload
+
+
 def _auth_token():
     if not ACCESS_PIN:
         return ''
@@ -1802,16 +1898,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not 0 <= sheet < 500 or not 1 <= start <= 20001:
                     return self.send(b'Invalid request', status=400)
                 try:
-                    kwargs = {'capture_output': True, 'timeout': 30}
-                    if os.name == 'nt':
-                        kwargs['creationflags'] = 0x08000000
-                    preview = subprocess.run([sys.executable, str(BASE / 'preview_excel.py'), str(p), str(sheet), str(start)], **kwargs)
-                    if preview.returncode:
-                        raise ValueError('preview failed')
-                    if (p.stat().st_size, p.stat().st_mtime_ns) != (st.st_size, st.st_mtime_ns):
-                        raise ValueError('file changed')
-                    return self.send(preview.stdout)
-                except (OSError, ValueError, subprocess.SubprocessError):
+                    payload = _render_excel_preview_bytes(p, st, sheet, start)
+                    return self.send(payload)
+                except (OSError, ValueError, IndexError, zipfile.BadZipFile):
                     return self.send('엑셀 미리보기를 열 수 없습니다. 원본을 확인해 주세요.'.encode(), 'text/plain; charset=utf-8', 503)
 
             if u.path in ['/api/detail', '/original']:
