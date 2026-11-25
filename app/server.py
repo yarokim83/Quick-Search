@@ -74,6 +74,7 @@ INDEX_BATCH_SIZE = max(0, int(os.environ.get('HPNT_INDEX_BATCH', '15') or '15'))
 INDEX_INTERVAL_SEC = max(10, int(os.environ.get('HPNT_INDEX_INTERVAL', '45') or '45'))
 _LIVE_SEQ_LOCK = threading.Lock()
 _LIVE_SEARCH_SEQ = 0
+_LAST_SEARCH_AT = 0.0
 _CATALOG_LOCK = threading.Lock()
 _CATALOG_CACHE = {
     'sig': None, 'checked_at': 0.0,
@@ -145,9 +146,9 @@ def _build_folder_entry(row):
     }
 
 
-def _narrow_rows_by_bigrams(rows, bidx, bigrams):
+def _narrow_rows_by_bigrams(rows, bidx, bigrams, require_qc=False):
     """Narrow candidate rows using a 2-gram inverted index; 100% sound for all substrings of text_all."""
-    if not rows or bidx is None or not bigrams:
+    if not rows or bidx is None or (not bigrams and not require_qc):
         return rows
     lists = []
     for bg in bigrams:
@@ -155,18 +156,80 @@ def _narrow_rows_by_bigrams(rows, bidx, bigrams):
         if not arr:
             return ()
         lists.append(arr)
+    qc_union = None
+    if require_qc:
+        qc_a = bidx.get('qc')
+        qc_b = bidx.get('q/')
+        if not qc_a and not qc_b:
+            return ()
+        if qc_a and qc_b:
+            qc_union = set(qc_a)
+            qc_union.update(qc_b)
+        else:
+            lists.append(qc_a or qc_b)
     lists.sort(key=len)
-    if len(lists) == 1:
+    if not lists:
+        return [rows[i] for i in sorted(qc_union)]
+    if len(lists) == 1 and qc_union is None:
         first = lists[0]
         if len(first) * 4 >= len(rows) * 3:
             return rows
         return [rows[i] for i in first]
     cand = set(lists[0])
+    if qc_union is not None:
+        cand.intersection_update(qc_union)
+        if not cand:
+            return ()
     for arr in lists[1:5]:
         cand.intersection_update(arr)
         if not cand:
             return ()
     return [rows[i] for i in sorted(cand)]
+
+
+def _equipment_match_pos(text, num, rx):
+    if not text or not num:
+        return -1
+    pos = 0
+    num_len = len(num)
+    while True:
+        idx = text.find(num, pos)
+        if idx < 0:
+            return -1
+        win_start = max(0, idx - 12)
+        m = rx.search(text[win_start:idx + num_len + 4])
+        if m is not None:
+            return win_start + m.start()
+        pos = idx + num_len
+
+
+def _equipment_match_count(text, num, rx, cap=1):
+    """Fast 100%-sound matcher for QC equipment regex: anchor on the 3-digit number via C str.find()."""
+    if not text or not num:
+        return 0
+    n = 0
+    pos = 0
+    num_len = len(num)
+    while True:
+        idx = text.find(num, pos)
+        if idx < 0:
+            return n
+        win_start = max(0, idx - 12)
+        win_end = idx + num_len + 4
+        if rx.search(text[win_start:win_end]):
+            n += 1
+            if n >= cap:
+                return n
+        pos = idx + num_len
+
+
+def _rx_count_capped3(rx, text):
+    n = 0
+    for _ in rx.finditer(text):
+        n += 1
+        if n >= 3:
+            return 3
+    return n
 
 
 def _schedule_docs_bigram_build(sig, docs, aliases, folders):
@@ -273,7 +336,8 @@ def get_catalog_cache_with_index(c=None, force=False):
         sig, has_folders_tbl = _query_catalog_sig(c)
 
         with _CATALOG_LOCK:
-            if not force and _CATALOG_CACHE['sig'] == sig:
+            old_sig = _CATALOG_CACHE['sig']
+            if not force and old_sig == sig:
                 _CATALOG_CACHE['checked_at'] = now
                 docs = _CATALOG_CACHE['docs']
                 aliases = _CATALOG_CACHE['aliases']
@@ -282,9 +346,40 @@ def get_catalog_cache_with_index(c=None, force=False):
                 aliases_bidx = _CATALOG_CACHE['aliases_bidx']
                 folders_bidx = _CATALOG_CACHE['folders_bidx']
                 need_bg = docs_bidx is None and bool(docs)
+                can_incr = False
+            elif (
+                not force
+                and old_sig is not None
+                and _CATALOG_CACHE['docs']
+                and (old_sig[0], old_sig[2], old_sig[3], old_sig[4]) == (sig[0], sig[2], sig[3], sig[4])
+                and sig[1] > old_sig[1]
+            ):
+                docs = None
+                need_bg = False
+                can_incr = True
+                old_max_idx = old_sig[1]
             else:
                 need_bg = False
+                can_incr = False
                 docs = None
+
+        if can_incr:
+            delta_ids = [
+                r[0] for r in c.execute(
+                    'select id from docs where present=1 and indexed_at > ?',
+                    (old_max_idx,),
+                )
+            ]
+            if delta_ids and len(delta_ids) <= 200 and _apply_indexed_docs_inplace(delta_ids):
+                with _CATALOG_LOCK:
+                    return (
+                        _CATALOG_CACHE['docs'],
+                        _CATALOG_CACHE['aliases'],
+                        _CATALOG_CACHE['folders'],
+                        _CATALOG_CACHE['docs_bidx'],
+                        _CATALOG_CACHE['aliases_bidx'],
+                        _CATALOG_CACHE['folders_bidx'],
+                    )
 
         if docs is not None:
             if need_bg:
@@ -590,6 +685,8 @@ def compute_facets(hits, active_folder=''):
 
 
 def find(query='', category='', scope='all', ext_filter='', sort_by='score', folder='', offset=0, limit=DEFAULT_LIMIT, exclude_mail=False, live_seq=0):
+    global _LAST_SEARCH_AT
+    _LAST_SEARCH_AT = time.monotonic()
     with _ChunkLoader() as chunk_loader:
         return _find_impl(
             query=query, category=category, scope=scope, ext_filter=ext_filter,
@@ -631,9 +728,10 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
         term for term, equipment in terms
         if equipment is None and term not in length_patterns and term not in drawing_patterns
     ]
+    equipment_pairs = [(term, equipment) for term, equipment in terms if equipment is not None]
     rx_terms = [
         pattern for (term, equipment), pattern in zip(terms, patterns)
-        if equipment is not None or term in length_patterns or term in drawing_patterns
+        if equipment is None and (term in length_patterns or term in drawing_patterns)
     ]
     req_set = set(substr_terms)
     for term, equipment in terms:
@@ -708,15 +806,16 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
     if live_seq and live_seq != _LIVE_SEARCH_SEQ:
         return None
 
+    has_qc_equipment = bool(equipment_patterns)
     if need_docs:
         docs_cache, aliases_cache, folders_cache, docs_bidx, aliases_bidx, folders_bidx = get_catalog_cache_with_index()
-        if query_bigrams:
-            docs_cand = _narrow_rows_by_bigrams(docs_cache, docs_bidx, query_bigrams)
+        if query_bigrams or has_qc_equipment:
+            docs_cand = _narrow_rows_by_bigrams(docs_cache, docs_bidx, query_bigrams, require_qc=has_qc_equipment)
             if scope == 'body':
                 doc_rows = docs_cand
             else:
-                aliases_cand = _narrow_rows_by_bigrams(aliases_cache, aliases_bidx, query_bigrams)
-                folders_cand = _narrow_rows_by_bigrams(folders_cache, folders_bidx, query_bigrams)
+                aliases_cand = _narrow_rows_by_bigrams(aliases_cache, aliases_bidx, query_bigrams, require_qc=has_qc_equipment)
+                folders_cand = _narrow_rows_by_bigrams(folders_cache, folders_bidx, query_bigrams, require_qc=has_qc_equipment)
                 doc_rows = chain(docs_cand, aliases_cand, folders_cand)
         else:
             doc_rows = docs_cache if scope == 'body' else chain(docs_cache, aliases_cache, folders_cache)
@@ -725,7 +824,7 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
 
     if need_mails:
         mails_cache, mail_by_id, mail_bidx = get_mail_cache_with_index()
-        mail_rows = _narrow_rows_by_bigrams(mails_cache, mail_bidx, query_bigrams) if query_bigrams else mails_cache
+        mail_rows = _narrow_rows_by_bigrams(mails_cache, mail_bidx, query_bigrams, require_qc=has_qc_equipment) if (query_bigrams or has_qc_equipment) else mails_cache
     else:
         mail_by_id = {}
         mail_rows = ()
@@ -735,6 +834,7 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
     hits = []
     matched_ids = set()
     outside_matched_ids = set()
+    doc_body_by_id = {}
     context_chunks = {}
     drawing_chunks = {}
     split_length_rows = set()
@@ -793,7 +893,11 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
                     break
             if not matched_req:
                 continue
+        if has_qc_equipment and 'qc' not in text and 'q/c' not in text:
+            continue
         if excludes and any(ex in text for ex in excludes):
+            continue
+        if equipment_pairs and not all(_equipment_match_count(text, num, rx, cap=1) for num, rx in equipment_pairs):
             continue
         if rx_terms and not all(rx.search(text) for rx in rx_terms):
             continue
@@ -810,8 +914,12 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
 
         if body:
             score = _count_capped3(body, sc0) if sc0 is not None else sum(_count_capped3(body, s) for s in score_substrs)
+            if equipment_pairs:
+                score += sum(_equipment_match_count(body, num, rx, cap=3) for num, rx in equipment_pairs)
             if rx_terms:
-                score += sum(min(3, len(rx.findall(body))) for rx in rx_terms)
+                score += sum(_rx_count_capped3(rx, body) for rx in rx_terms)
+            if not is_mail:
+                doc_body_by_id[doc_id] = body
         else:
             score = 0
         if scope != 'body':
@@ -820,6 +928,12 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
                 score += 8 * (sc0 in name) + 2 * (sc0 in path)
             else:
                 score += sum(8 * (s in name) + 2 * (s in path) for s in score_substrs)
+            if equipment_pairs:
+                score += sum(
+                    8 * bool(_equipment_match_count(name, num, rx, cap=1))
+                    + 2 * bool(_equipment_match_count(path, num, rx, cap=1))
+                    for num, rx in equipment_pairs
+                )
             if rx_terms:
                 score += sum(8 * bool(rx.search(name)) + 2 * bool(rx.search(path)) for rx in rx_terms)
 
@@ -967,7 +1081,52 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
             original['original_available'] = original['extension'] in ORIGINAL_EXTENSIONS
         if h.get('method') == 'record':
             continue
-        chunks = chunk_loader.get(h['id']) if (not browse_mode and h['status'] in ('ready', 'partial')) else ()
+        drawing = drawing_chunks.get(h['id'])
+        context = drawing or context_chunks.get(h['id'])
+        need_chunk_lookup = (
+            not browse_mode
+            and h['status'] in ('ready', 'partial')
+            and (
+                bool(h.get('period_label'))
+                or drawing is not None
+                or context is not None
+                or h['id'] in split_length_rows
+            )
+        )
+        if not need_chunk_lookup:
+            doc_body = doc_body_by_id.get(h['id'], '') if (not browse_mode and h['status'] in ('ready', 'partial')) else ''
+            pos = -1
+            if doc_body:
+                for num, rx in equipment_pairs:
+                    p_eq = _equipment_match_pos(doc_body, num, rx)
+                    if p_eq >= 0:
+                        pos = p_eq
+                        break
+                if pos < 0:
+                    for s in score_substrs:
+                        idx = doc_body.find(s)
+                        if idx >= 0:
+                            pos = idx
+                            break
+                if pos < 0 and rx_terms:
+                    for pat in rx_terms:
+                        m = pat.search(doc_body)
+                        if m is not None:
+                            pos = m.start()
+                            break
+            if pos >= 0:
+                h.update(location='본문 일치', snippet=doc_body[max(0, pos - 70):pos + 450], method='body')
+            elif browse_mode:
+                h.update(
+                    location='폴더·조건 탐색',
+                    snippet=(h['path'].rsplit('/', 1)[0] if '/' in h['path'] else '최상위 폴더'),
+                    method='browse',
+                )
+            else:
+                h.update(location='파일명·경로 검색', snippet='검색어가 파일명 또는 경로에 있습니다.', method='filename')
+            continue
+
+        chunks = chunk_loader.get(h['id'])
         if h.get('period_label'):
             for chunk in chunks:
                 if chunk['location'].strip().startswith('보고자료') and '장비 고장 통계' in chunk['text']:
@@ -1104,6 +1263,8 @@ def run_scan_once():
 
 def run_index_batch(limit=INDEX_BATCH_SIZE):
     if limit <= 0 or scan_lock.locked():
+        return 0
+    if _LAST_SEARCH_AT and (time.monotonic() - _LAST_SEARCH_AT) < 120.0:
         return 0
     if not index_lock.acquire(blocking=False):
         return 0
