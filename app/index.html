@@ -571,8 +571,31 @@
     max-height: calc(100vh - 16px);
     display: flex;
     flex-direction: column;
+    transition: box-shadow 0.15s ease;
   }
   .inspector.hidden { display: none; }
+  .inspector.expanded {
+    position: fixed !important;
+    top: max(14px, env(safe-area-inset-top)) !important;
+    bottom: max(14px, env(safe-area-inset-bottom)) !important;
+    left: max(18px, env(safe-area-inset-left)) !important;
+    right: max(18px, env(safe-area-inset-right)) !important;
+    width: auto !important;
+    max-height: none !important;
+    z-index: 170 !important;
+    box-shadow: 0 18px 54px rgba(10, 30, 40, 0.34) !important;
+  }
+  .inspector.expanded .inspector-body { max-height: calc(100vh - 76px); }
+  .inspector.expanded .excel-scroll { max-height: calc(100vh - 300px); }
+  .inspector.expanded .pdf-frame { height: calc(100vh - 250px); }
+  #insp-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 32, 42, 0.42);
+    z-index: 165;
+  }
+  #insp-backdrop.open { display: block; }
   .inspector-head {
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
@@ -582,14 +605,15 @@
     align-items: center;
     gap: 8px;
   }
+  .inspector-head-actions { display: flex; align-items: center; gap: 5px; }
   .inspector-body { padding: 10px 12px; overflow-y: auto; max-height: calc(100vh - 60px); }
-  .insp-title { margin: 6px 0; font-size: 15.5px; line-height: 1.35; overflow-wrap: anywhere; color: #0e3d39; }
-  .insp-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 8px 0 10px; }
+  .insp-title { margin: 5px 0 4px; font-size: 15px; line-height: 1.35; overflow-wrap: anywhere; color: #0e3d39; }
+  .insp-actions { display: flex; flex-wrap: wrap; gap: 5px; margin: 7px 0 6px; }
   .btn-action {
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    padding: 5px 10px;
+    padding: 4px 9px;
     border-radius: 7px;
     font-size: 12px;
     font-weight: 600;
@@ -602,19 +626,107 @@
   .btn-action.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
   .btn-action.primary:hover { background: var(--brand-dark); color: #fff; }
 
+  .insp-tabs {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+    margin: 8px 0 8px;
+  }
+  .insp-tab-btn {
+    padding: 5px 9px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 7px;
+    border: 1px solid var(--border);
+    background: var(--surface-soft);
+    color: var(--muted);
+  }
+  .insp-tab-btn:hover { border-color: var(--brand); color: var(--brand); }
+  .insp-tab-btn.active {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: #fff;
+  }
+  .insp-tab-panel { display: none; }
+  .insp-tab-panel.active { display: block; }
+
   .insp-section {
-    margin-top: 10px;
-    padding-top: 10px;
+    margin-top: 8px;
+    padding-top: 8px;
     border-top: 1px solid #ebf0f3;
   }
+  .insp-tab-panel > .insp-section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
   .insp-section h4 { margin: 0 0 6px; font-size: 12.5px; color: var(--brand-dark); }
-  .excel-scroll { overflow: auto; max-height: 360px; border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; }
-  .excel-table { border-collapse: collapse; min-width: 100%; font-size: 12px; }
-  .excel-table td, .excel-table th { border: 1px solid #d5dfe4; padding: 5px 7px; min-width: 72px; max-width: 260px; white-space: pre-wrap; vertical-align: top; }
-  .excel-table th { background: #e8f1ef; position: sticky; left: 0; z-index: 1; }
-  .excel-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 8px; font-size: 12px; }
-  .excel-images img { max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px; margin-top: 6px; }
-  .pdf-frame { width: 100%; height: 420px; border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; background: #fff; }
+
+  .excel-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .excel-sheet-tabs { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .excel-sheet-tab {
+    padding: 3px 8px;
+    font-size: 11.5px;
+    font-weight: 600;
+    border-radius: 6px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--muted);
+  }
+  .excel-sheet-tab.active { background: var(--brand-soft); border-color: var(--brand); color: var(--brand-dark); }
+  .excel-filter-group { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+  .chip-toggle {
+    padding: 3px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 999px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface);
+    color: var(--muted);
+  }
+  .chip-toggle.active { background: var(--brand-soft); border-color: var(--brand); color: var(--brand-dark); }
+
+  .excel-scroll { overflow: auto; max-height: 410px; border: 1px solid var(--border); border-radius: 8px; margin-top: 4px; background: #fff; }
+  .excel-table { border-collapse: collapse; min-width: 100%; font-size: 11.5px; line-height: 1.35; }
+  .excel-table td, .excel-table th { border: 1px solid #dce5e9; padding: 3px 6px; min-width: 48px; max-width: 240px; white-space: pre-wrap; word-break: break-word; vertical-align: top; }
+  .excel-table th { background: #e8f1ef; color: #2b4946; font-weight: 600; text-align: center; min-width: 34px; position: sticky; left: 0; z-index: 1; }
+  .excel-table tr:nth-child(even) td { background: #fafcfd; }
+  .excel-table tr.excel-hit-row td { background: #fffbe6; }
+  .excel-nav { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 7px; font-size: 11.5px; color: var(--muted); }
+  .excel-images { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; margin-top: 6px; }
+  .excel-images a { display: block; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--surface-soft); }
+  .excel-images img { display: block; width: 100%; height: auto; }
+  .pdf-frame { width: 100%; height: 460px; border: 1px solid var(--border); border-radius: 8px; margin-top: 6px; background: #fff; }
+
+  .detail-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+  .detail-list { display: flex; flex-direction: column; gap: 5px; }
+  .detail-row {
+    border: 1px solid #e3ecef;
+    border-radius: 7px;
+    padding: 6px 9px;
+    background: var(--surface-soft);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+  .detail-row.hit { border-color: #d9c878; background: #fffdf0; }
+  .detail-loc {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--brand-dark);
+    background: var(--brand-soft);
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-right: 6px;
+    vertical-align: baseline;
+  }
+  .detail-text { white-space: pre-wrap; color: var(--text); }
 
   .empty-box { padding: 36px 20px; text-align: center; color: var(--muted); }
   .feedback-line { font-size: 12px; color: var(--brand); margin: 4px 0 0; min-height: 1em; }
@@ -948,12 +1060,16 @@
     <aside class="pane inspector hidden" id="inspector">
       <div class="inspector-head">
         <strong style="font-size:13px;color:var(--brand-dark);">문서 인스펙터 · 미리보기</strong>
-        <button type="button" id="close-insp-btn" class="btn-mini">닫기 ×</button>
+        <div class="inspector-head-actions">
+          <button type="button" id="expand-insp-btn" class="btn-mini" title="미리보기 크게 보기 / 원래 크기 (단축키 f)">⤢ 크게 보기</button>
+          <button type="button" id="close-insp-btn" class="btn-mini">닫기 ×</button>
+        </div>
       </div>
       <div class="inspector-body" id="inspector-body"></div>
     </aside>
   </div>
 </div>
+<div id="insp-backdrop" aria-hidden="true"></div>
 <div id="global-pst-drop-overlay" aria-hidden="true">
   <div class="global-drop-card">📥 여기에 Outlook <code>.pst</code> 파일을 놓으면 메일 변환·추가 창이 열립니다</div>
 </div>
@@ -1029,6 +1145,8 @@ const sidebar = document.querySelector('#sidebar');
 const sideBody = document.querySelector('#side-body');
 const inspector = document.querySelector('#inspector');
 const inspectorBody = document.querySelector('#inspector-body');
+const expandInspBtn = document.querySelector('#expand-insp-btn');
+const inspBackdrop = document.querySelector('#insp-backdrop');
 const closeInspBtn = document.querySelector('#close-insp-btn');
 const toggleSidebarBtn = document.querySelector('#toggle-sidebar-btn');
 const breadcrumbBar = document.querySelector('#breadcrumb-bar');
@@ -1537,12 +1655,164 @@ function renderSidebar() {
 }
 
 /* Inspector & Inline Previews */
-function buildExcelWidget(file, terms, attIndex = null) {
+function setInspectorExpanded(expanded) {
+  const on = Boolean(expanded) && !inspector.classList.contains('hidden');
+  inspector.classList.toggle('expanded', on);
+  if (inspBackdrop) inspBackdrop.classList.toggle('open', on);
+  if (expandInspBtn) expandInspBtn.textContent = on ? '⤡ 원래 크기' : '⤢ 크게 보기';
+}
+if (expandInspBtn) {
+  expandInspBtn.onclick = () => setInspectorExpanded(!inspector.classList.contains('expanded'));
+}
+if (inspBackdrop) {
+  inspBackdrop.onclick = () => setInspectorExpanded(false);
+}
+
+function cleanCellValue(val) {
+  return String(val ?? '').replace(/\b(\d{4}-\d{2}-\d{2}) 00:00:00\b/g, '$1');
+}
+
+function cleanExtractedText(raw, method, showRawCoords = false) {
+  let s = String(raw ?? '');
+  if (!showRawCoords && (method === 'xlsx' || method === 'xls' || /(?:^|\s\|\s)[A-Za-z]{1,3}\d+=/.test(s))) {
+    s = s
+      .replace(/(?:^|\s*\|\s*)[A-Za-z]{1,3}\d+=/g, (m, off) => (off === 0 ? '' : ' · '))
+      .replace(/\b(\d{4}-\d{2}-\d{2}) 00:00:00\b/g, '$1')
+      .replace(/\s*\n\s*/g, '\n')
+      .trim();
+  }
+  return s;
+}
+
+function buildExcelWidget(file, terms, attIndex = null, { onImages = null } = {}) {
   const wrap = node('div', '', 'insp-section');
-  wrap.append(node('h4', '엑셀 시트 미리보기'));
   const area = node('div');
   wrap.append(area);
   let sheet = 0, start = 1, loading = false;
+  let hideEmpty = true;
+  let onlyMatched = false;
+  let lastData = null;
+
+  function renderTable() {
+    if (!lastData) return;
+    const data = lastData;
+    area.replaceChildren();
+
+    const toolbar = node('div', '', 'excel-toolbar');
+    if (data.sheets.length <= 12) {
+      const tabs = node('div', '', 'excel-sheet-tabs');
+      data.sheets.forEach((name, idx) => {
+        const b = node('button', name, 'excel-sheet-tab' + (idx === data.sheet ? ' active' : ''));
+        b.type = 'button';
+        b.onclick = () => { sheet = idx; start = 1; load(); };
+        tabs.append(b);
+      });
+      toolbar.append(tabs);
+    } else {
+      const sel = document.createElement('select');
+      sel.style.cssText = 'padding:4px 8px;font-size:12px;max-width:100%;';
+      data.sheets.forEach((name, idx) => {
+        const opt = node('option', name);
+        opt.value = idx;
+        opt.selected = idx === data.sheet;
+        sel.append(opt);
+      });
+      sel.onchange = () => { sheet = Number(sel.value); start = 1; load(); };
+      toolbar.append(sel);
+    }
+
+    const rx = terms instanceof RegExp ? terms : buildHighlightRegex(terms);
+    const fgroup = node('div', '', 'excel-filter-group');
+
+    const emptyBtn = node('button', hideEmpty ? '빈 행 숨김 ✓' : '빈 행 표시', 'chip-toggle' + (hideEmpty ? ' active' : ''));
+    emptyBtn.type = 'button';
+    emptyBtn.onclick = () => { hideEmpty = !hideEmpty; renderTable(); };
+    fgroup.append(emptyBtn);
+
+    if (rx) {
+      const matchBtn = node('button', onlyMatched ? '🔍 일치 행만 ✓' : '🔍 일치 행만', 'chip-toggle' + (onlyMatched ? ' active' : ''));
+      matchBtn.type = 'button';
+      matchBtn.onclick = () => { onlyMatched = !onlyMatched; renderTable(); };
+      fgroup.append(matchBtn);
+    }
+
+    if (!inspector.classList.contains('expanded')) {
+      const bigBtn = node('button', '⤢ 넓게 보기', 'chip-toggle');
+      bigBtn.type = 'button';
+      bigBtn.onclick = () => setInspectorExpanded(true);
+      fgroup.append(bigBtn);
+    }
+    toolbar.append(fgroup);
+    area.append(toolbar);
+
+    const indexedRows = data.rows.map((row, i) => {
+      const cleaned = row.map(cleanCellValue);
+      const nonEmpty = cleaned.some(c => c.trim() !== '');
+      const isHit = rx ? cleaned.some(c => { rx.lastIndex = 0; return rx.test(c); }) : false;
+      return { rowNum: data.start + i, cells: cleaned, nonEmpty, isHit };
+    });
+
+    let visible = indexedRows;
+    if (hideEmpty) visible = visible.filter(r => r.nonEmpty);
+    if (onlyMatched && rx) visible = visible.filter(r => r.isHit);
+
+    if (visible.length) {
+      const sc = node('div', '', 'excel-scroll');
+      const tbl = document.createElement('table');
+      tbl.className = 'excel-table';
+      visible.forEach(item => {
+        const tr = document.createElement('tr');
+        if (item.isHit) tr.className = 'excel-hit-row';
+        tr.append(node('th', String(item.rowNum)));
+        item.cells.forEach(cell => {
+          const td = document.createElement('td');
+          appendHighlighted(td, cell, rx);
+          tr.append(td);
+        });
+        tbl.append(tr);
+      });
+      sc.append(tbl);
+      area.append(sc);
+    } else {
+      area.append(node('p', onlyMatched ? '이 50행 구간에는 검색어 일치 행이 없습니다. (다음 50행을 확인하거나 필터를 해제해 보세요)' : '표시할 셀 값이 없습니다.', 'row-sub'));
+    }
+
+    const nav = node('div', '', 'excel-nav');
+    const prev = node('button', '이전 50행', 'btn-mini');
+    const next = node('button', '다음 50행', 'btn-mini');
+    prev.type = next.type = 'button';
+    prev.disabled = data.start <= 1;
+    next.disabled = !data.has_more || data.start >= 20001;
+    prev.onclick = () => { start = Math.max(1, start - 50); load(); };
+    next.onclick = () => { start += 50; load(); };
+    nav.append(prev, node('span', `${data.start}행~ · 표시 ${visible.length}행 · 최대 ${data.column_limit}열`), next);
+    area.append(nav);
+
+    if (data.images) {
+      const imgs = node('div', '', 'excel-images');
+      for (let i = 0; i < data.images; i++) {
+        const a = document.createElement('a');
+        const imgQ = { id: file.id, n: i };
+        if (attIndex !== null && attIndex !== undefined) imgQ.att = attIndex;
+        a.href = '/api/excel-image?' + new URLSearchParams(imgQ);
+        a.target = '_blank'; a.rel = 'noopener';
+        const img = document.createElement('img');
+        img.src = a.href; img.loading = 'lazy';
+        a.append(img);
+        imgs.append(a);
+      }
+      if (typeof onImages === 'function') {
+        onImages(data.images, imgs);
+      } else {
+        const imgSec = node('div', '', 'insp-section');
+        imgSec.append(node('h4', `삽입 이미지 (${data.images}개)`), imgs);
+        area.append(imgSec);
+      }
+    } else if (typeof onImages === 'function') {
+      onImages(0, null);
+    }
+  }
+
   async function load() {
     if (loading) return;
     loading = true;
@@ -1552,64 +1822,8 @@ function buildExcelWidget(file, terms, attIndex = null) {
       if (attIndex !== null && attIndex !== undefined) qObj.att = attIndex;
       const r = await fetch('/api/excel-preview?' + new URLSearchParams(qObj));
       if (!r.ok) throw Error(await r.text());
-      const data = await r.json();
-      area.replaceChildren();
-      const sel = document.createElement('select');
-      sel.style.cssText = 'padding:5px 8px;font-size:12.5px;margin-bottom:6px;max-width:100%;';
-      data.sheets.forEach((name, idx) => {
-        const opt = node('option', name);
-        opt.value = idx;
-        opt.selected = idx === data.sheet;
-        sel.append(opt);
-      });
-      sel.onchange = () => { sheet = Number(sel.value); start = 1; load(); };
-      area.append(sel);
-      if (data.rows.length) {
-        const rx = terms instanceof RegExp ? terms : buildHighlightRegex(terms);
-        const sc = node('div', '', 'excel-scroll');
-        const tbl = document.createElement('table');
-        tbl.className = 'excel-table';
-        data.rows.forEach((row, i) => {
-          const tr = document.createElement('tr');
-          tr.append(node('th', String(data.start + i)));
-          row.forEach(cell => {
-            const td = document.createElement('td');
-            appendHighlighted(td, cell, rx);
-            tr.append(td);
-          });
-          tbl.append(tr);
-        });
-        sc.append(tbl);
-        area.append(sc);
-      } else {
-        area.append(node('p', '표시할 셀 값이 없습니다.', 'row-sub'));
-      }
-      const nav = node('div', '', 'excel-nav');
-      const prev = node('button', '이전 50행', 'btn-mini');
-      const next = node('button', '다음 50행', 'btn-mini');
-      prev.type = next.type = 'button';
-      prev.disabled = data.start <= 1;
-      next.disabled = !data.has_more || data.start >= 20001;
-      prev.onclick = () => { start = Math.max(1, start - 50); load(); };
-      next.onclick = () => { start += 50; load(); };
-      nav.append(prev, node('span', `${data.start}행~ · 최대 ${data.column_limit}열`), next);
-      area.append(nav);
-      if (data.images) {
-        const imgs = node('div', '', 'excel-images');
-        imgs.append(node('p', `삽입 이미지 ${data.images}개`, 'row-sub'));
-        for (let i = 0; i < data.images; i++) {
-          const a = document.createElement('a');
-          const imgQ = { id: file.id, n: i };
-          if (attIndex !== null && attIndex !== undefined) imgQ.att = attIndex;
-          a.href = '/api/excel-image?' + new URLSearchParams(imgQ);
-          a.target = '_blank'; a.rel = 'noopener';
-          const img = document.createElement('img');
-          img.src = a.href; img.loading = 'lazy';
-          a.append(img);
-          imgs.append(a);
-        }
-        area.append(imgs);
-      }
+      lastData = await r.json();
+      renderTable();
     } catch (e) {
       area.textContent = e.message || '미리보기를 불러오지 못했습니다.';
     } finally {
@@ -1622,9 +1836,9 @@ function buildExcelWidget(file, terms, attIndex = null) {
 
 function buildPdfWidget(file, location, attIndex = null) {
   const wrap = node('div', '', 'insp-section');
-  wrap.append(node('h4', 'PDF 문서 바로 보기'));
   const page = /^페이지 ([1-9][0-9]*)(?:$|\s)/.exec(location ?? '')?.[1];
-  const btn = node('button', page ? `PDF 인라인 뷰어 열기 (${page}쪽)` : 'PDF 인라인 뷰어 열기', 'btn-soft');
+  const bar = node('div', '', 'excel-toolbar');
+  const btn = node('button', page ? `PDF 인라인 뷰어 열기 (${page}쪽)` : 'PDF 인라인 뷰어 열기', 'btn-action primary');
   btn.type = 'button';
   const holder = node('div');
   btn.onclick = () => {
@@ -1635,13 +1849,13 @@ function buildPdfWidget(file, location, attIndex = null) {
     frame.src = '/original?id=' + file.id + attPart + (page ? '#page=' + page : '');
     holder.append(frame);
   };
-  wrap.append(btn, holder);
+  bar.append(btn);
+  wrap.append(bar, holder);
   return wrap;
 }
 
 function buildDetailWidget(file, terms) {
   const wrap = node('div', '', 'insp-section');
-  wrap.append(node('h4', '저장된 추출 본문'));
   const area = node('div');
   area.textContent = '불러오는 중…';
   wrap.append(area);
@@ -1655,13 +1869,76 @@ function buildDetailWidget(file, terms) {
       return;
     }
     const rx = terms instanceof RegExp ? terms : buildHighlightRegex(terms);
-    for (const part of detail.parts) {
-      const loc = node('strong', part.location);
-      loc.style.cssText = 'display:block;font-size:12px;margin-top:8px;';
-      const pre = node('pre', '', 'snippet-pre');
-      appendHighlighted(pre, part.text, rx);
-      area.append(loc, pre);
+    if (file.kind === 'mail') {
+      for (const part of detail.parts) {
+        const loc = node('strong', part.location);
+        loc.style.cssText = 'display:block;font-size:12px;margin-bottom:6px;color:var(--brand-dark);';
+        const pre = node('pre', '', 'snippet-pre');
+        pre.style.maxHeight = 'none';
+        appendHighlighted(pre, part.text, rx);
+        area.append(loc, pre);
+      }
+      return;
     }
+
+    const isSheet = detail.parts.some(p => p.method === 'xlsx' || p.method === 'xls');
+    const matchedParts = rx ? detail.parts.filter(p => { rx.lastIndex = 0; return rx.test(p.text); }) : [];
+    let onlyHits = matchedParts.length > 0;
+    let showRawCoords = false;
+    let pageLimit = 120;
+
+    function renderParts() {
+      area.replaceChildren();
+      const source = (onlyHits && rx) ? matchedParts : detail.parts;
+      const bar = node('div', '', 'detail-toolbar');
+      const left = node('div', '', 'excel-filter-group');
+
+      if (rx && matchedParts.length > 0) {
+        const hitBtn = node('button', `🔍 일치 구간만 (${matchedParts.length}건)`, 'chip-toggle' + (onlyHits ? ' active' : ''));
+        hitBtn.type = 'button';
+        hitBtn.onclick = () => { onlyHits = true; pageLimit = 120; renderParts(); };
+        const allBtn = node('button', `전체 (${detail.parts.length.toLocaleString()}건)`, 'chip-toggle' + (!onlyHits ? ' active' : ''));
+        allBtn.type = 'button';
+        allBtn.onclick = () => { onlyHits = false; pageLimit = 120; renderParts(); };
+        left.append(hitBtn, allBtn);
+      } else {
+        left.append(node('span', `총 ${detail.parts.length.toLocaleString()}개 구간`, 'row-sub'));
+      }
+
+      if (isSheet) {
+        const rawBtn = node('button', showRawCoords ? '셀 좌표 표시 ✓' : '깔끔 보기 ✓', 'chip-toggle' + (!showRawCoords ? ' active' : ''));
+        rawBtn.type = 'button';
+        rawBtn.title = '엑셀 셀 좌표(B11=, C11=) 숨기기 / 표시';
+        rawBtn.onclick = () => { showRawCoords = !showRawCoords; renderParts(); };
+        left.append(rawBtn);
+      }
+      bar.append(left);
+      area.append(bar);
+
+      const list = node('div', '', 'detail-list');
+      const slice = source.slice(0, pageLimit);
+      for (const part of slice) {
+        const isHit = rx ? (rx.lastIndex = 0, rx.test(part.text)) : false;
+        const row = node('div', '', 'detail-row' + (isHit ? ' hit' : ''));
+        row.append(node('span', part.location, 'detail-loc'));
+        const txt = node('span', '', 'detail-text');
+        appendHighlighted(txt, cleanExtractedText(part.text, part.method, showRawCoords), rx);
+        row.append(txt);
+        list.append(row);
+      }
+      area.append(list);
+
+      if (source.length > pageLimit) {
+        const moreWrap = node('div');
+        moreWrap.style.cssText = 'text-align:center;margin-top:8px;';
+        const moreBtn = node('button', `더 보기 (+150건 · ${(source.length - pageLimit).toLocaleString()}건 남음)`, 'btn-soft');
+        moreBtn.type = 'button';
+        moreBtn.onclick = () => { pageLimit += 150; renderParts(); };
+        moreWrap.append(moreBtn);
+        area.append(moreWrap);
+      }
+    }
+    renderParts();
   }).catch(() => { area.textContent = '본문을 불러오지 못했습니다.'; });
   return wrap;
 }
@@ -1761,64 +2038,121 @@ function openInspector(file) {
   }
   inspectorBody.append(actions, feedback);
 
-  if (file.snippet) {
-    const sec = node('div', '', 'insp-section');
-    sec.append(node('h4', file.location || '검색 근거'));
-    if (file.evidence_label) sec.append(node('p', file.evidence_label, 'row-sub'));
-    const pre = node('pre', '', 'snippet-pre');
-    appendHighlighted(pre, file.snippet, rx);
-    sec.append(pre);
-    inspectorBody.append(sec);
+  /* Tabbed Preview Body */
+  const tabBar = node('div', '', 'insp-tabs');
+  const tabPanels = node('div');
+  const tabRegistry = [];
+
+  function addTab(id, label, contentEl, { hidden = false } = {}) {
+    const btn = node('button', label, 'insp-tab-btn');
+    btn.type = 'button';
+    if (hidden) btn.style.display = 'none';
+    const panel = node('div', '', 'insp-tab-panel');
+    if (contentEl) panel.append(contentEl);
+    btn.onclick = () => activateTab(id);
+    tabBar.append(btn);
+    tabPanels.append(panel);
+    const entry = { id, btn, panel };
+    tabRegistry.push(entry);
+    return entry;
   }
 
-  if (file.kind === 'mail' && file.attachments && file.attachments.length) {
-    const attSec = node('div', '', 'insp-section');
-    attSec.append(node('h4', `📎 메일 첨부파일 (${file.attachments.length}개)`));
-    for (const att of file.attachments) {
-      const box = node('div');
-      box.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-top:6px;background:var(--surface-soft);';
-      const aem = extMeta(att.ext);
-      const head = node('div', '', 'row-title');
-      head.style.fontSize = '12.5px';
-      head.append(node('span', aem.label, 'badge badge-ext ' + aem.cls));
-      const nm = node('span');
-      nm.style.marginLeft = '6px';
-      appendHighlighted(nm, att.name, rx);
-      head.append(nm);
-      const bar = node('div', '', 'mini-actions');
-      bar.style.marginTop = '6px';
-      const oBtn = node('button', '첨부 열기', 'btn-mini primary pc-only');
-      oBtn.type = 'button';
-      oBtn.onclick = () => postFileAction('/api/open-local', file, feedback, '첨부파일을 여는 중…', '첨부파일 열기를 요청했습니다.', att.index);
-      const fBtn = node('button', '폴더 열기', 'btn-mini pc-only');
-      fBtn.type = 'button';
-      fBtn.onclick = () => postFileAction('/api/open-folder', file, feedback, '탐색기 여는 중…', '탐색기에서 첨부 위치를 열었습니다.', att.index);
-      const dl = node('a', att.ext === '.pdf' ? '새 창 PDF' : '다운로드', state.isLocalClient ? 'btn-mini' : 'btn-mini primary');
-      dl.style.textDecoration = 'none';
-      if (state.isLocalClient) dl.style.cssText = 'text-decoration:none;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);';
-      dl.href = `/original?id=${file.id}&att=${att.index}`;
-      dl.target = '_blank'; dl.rel = 'noopener';
-      bar.append(oBtn, fBtn, dl);
-      if (['.xlsx', '.xlsm', '.xls'].includes(att.ext)) {
-        const pBtn = node('button', '시트 미리보기', 'btn-mini');
-        pBtn.type = 'button';
-        pBtn.onclick = () => { pBtn.disabled = true; box.append(buildExcelWidget(file, terms, att.index)); };
-        bar.append(pBtn);
-      } else if (att.ext === '.pdf') {
-        const pBtn = node('button', 'PDF 미리보기', 'btn-mini');
-        pBtn.type = 'button';
-        pBtn.onclick = () => { pBtn.disabled = true; box.append(buildPdfWidget(file, '', att.index)); };
-        bar.append(pBtn);
-      }
-      box.append(head, bar);
-      attSec.append(box);
+  function activateTab(id) {
+    for (const t of tabRegistry) {
+      const on = t.id === id;
+      t.btn.classList.toggle('active', on);
+      t.panel.classList.toggle('active', on);
     }
-    inspectorBody.append(attSec);
+  }
+
+  const isExcel = ['.xlsx', '.xlsm', '.xls'].includes(file.extension) && file.path_confirmed !== false;
+  const isPdf = file.extension === '.pdf' && file.path_confirmed !== false && file.original_available !== false;
+  const hasDetail = file.status === 'ready' || file.status === 'partial';
+
+  if (isExcel) {
+    const imgContainer = node('div', '', 'insp-section');
+    let imgTab = null;
+    const excelEl = buildExcelWidget(file, terms, null, {
+      onImages: (count, imgsEl) => {
+        if (!imgTab) return;
+        imgContainer.replaceChildren();
+        if (count > 0 && imgsEl) {
+          imgTab.btn.style.display = '';
+          imgTab.btn.textContent = `🖼️ 이미지 (${count})`;
+          imgContainer.append(imgsEl);
+        } else {
+          imgTab.btn.style.display = 'none';
+        }
+      },
+    });
+    addTab('excel', '📊 시트 표', excelEl);
+    imgTab = addTab('images', '🖼️ 이미지', imgContainer, { hidden: true });
+  } else if (isPdf) {
+    addTab('pdf', '📄 PDF 보기', buildPdfWidget(file, file.location));
+  }
+
+  if (file.kind === 'mail') {
+    if (hasDetail) addTab('detail', '✉️ 메일 본문', buildDetailWidget(file, terms));
+    if (file.attachments && file.attachments.length) {
+      const attSec = node('div', '', 'insp-section');
+      for (const att of file.attachments) {
+        const box = node('div');
+        box.style.cssText = 'border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-top:6px;background:var(--surface-soft);';
+        const aem = extMeta(att.ext);
+        const head = node('div', '', 'row-title');
+        head.style.fontSize = '12.5px';
+        head.append(node('span', aem.label, 'badge badge-ext ' + aem.cls));
+        const nm = node('span');
+        nm.style.marginLeft = '6px';
+        appendHighlighted(nm, att.name, rx);
+        head.append(nm);
+        const bar = node('div', '', 'mini-actions');
+        bar.style.marginTop = '6px';
+        const oBtn = node('button', '첨부 열기', 'btn-mini primary pc-only');
+        oBtn.type = 'button';
+        oBtn.onclick = () => postFileAction('/api/open-local', file, feedback, '첨부파일을 여는 중…', '첨부파일 열기를 요청했습니다.', att.index);
+        const fBtn = node('button', '폴더 열기', 'btn-mini pc-only');
+        fBtn.type = 'button';
+        fBtn.onclick = () => postFileAction('/api/open-folder', file, feedback, '탐색기 여는 중…', '탐색기에서 첨부 위치를 열었습니다.', att.index);
+        const dl = node('a', att.ext === '.pdf' ? '새 창 PDF' : '다운로드', state.isLocalClient ? 'btn-mini' : 'btn-mini primary');
+        dl.style.textDecoration = 'none';
+        if (state.isLocalClient) dl.style.cssText = 'text-decoration:none;border:1px solid var(--border-strong);background:var(--surface);color:var(--text);';
+        dl.href = `/original?id=${file.id}&att=${att.index}`;
+        dl.target = '_blank'; dl.rel = 'noopener';
+        bar.append(oBtn, fBtn, dl);
+        if (['.xlsx', '.xlsm', '.xls'].includes(att.ext)) {
+          const pBtn = node('button', '시트 미리보기', 'btn-mini');
+          pBtn.type = 'button';
+          pBtn.onclick = () => { pBtn.disabled = true; box.append(buildExcelWidget(file, terms, att.index)); };
+          bar.append(pBtn);
+        } else if (att.ext === '.pdf') {
+          const pBtn = node('button', 'PDF 미리보기', 'btn-mini');
+          pBtn.type = 'button';
+          pBtn.onclick = () => { pBtn.disabled = true; box.append(buildPdfWidget(file, '', att.index)); };
+          bar.append(pBtn);
+        }
+        box.append(head, bar);
+        attSec.append(box);
+      }
+      addTab('attachments', `📎 첨부 (${file.attachments.length})`, attSec);
+    }
+  } else {
+    if (file.snippet && file.method !== 'filename' && file.method !== 'browse' && file.method !== 'folder') {
+      const sec = node('div', '', 'insp-section');
+      if (file.evidence_label) sec.append(node('p', file.evidence_label, 'row-sub'));
+      const pre = node('pre', '', 'snippet-pre');
+      pre.style.maxHeight = '320px';
+      appendHighlighted(pre, cleanExtractedText(file.snippet, file.method, false), rx);
+      sec.append(pre);
+      addTab('snippet', '🔍 검색 일치', sec);
+    }
+    if (hasDetail) {
+      addTab('detail', '📝 추출 텍스트', buildDetailWidget(file, terms));
+    }
   }
 
   if (file.related) {
     const relSec = node('div', '', 'insp-section');
-    relSec.append(node('h4', `관련 원본 묶음 (${file.related.originals.length}개)`));
     relSec.append(node('p', file.related.proof, 'row-sub'));
     for (const orig of file.related.originals) {
       const box = node('div');
@@ -1853,17 +2187,12 @@ function openInspector(file) {
       }
       relSec.append(box);
     }
-    inspectorBody.append(relSec);
+    addTab('related', `📦 관련 원본 (${file.related.originals.length})`, relSec);
   }
 
-  if (['.xlsx', '.xlsm', '.xls'].includes(file.extension) && file.path_confirmed !== false) {
-    inspectorBody.append(buildExcelWidget(file, terms));
-  } else if (file.extension === '.pdf' && file.path_confirmed !== false && file.original_available !== false) {
-    inspectorBody.append(buildPdfWidget(file, file.location));
-  }
-
-  if (file.status === 'ready' || file.status === 'partial') {
-    inspectorBody.append(buildDetailWidget(file, terms));
+  if (tabRegistry.length) {
+    inspectorBody.append(tabBar, tabPanels);
+    activateTab(tabRegistry[0].id);
   } else {
     const fallbackMsg = file.kind === 'folder'
       ? "이 폴더의 하위 파일과 하위 폴더를 앱 안에서 보려면 '앱 안에서 내부 보기'를 누르세요."
@@ -1875,6 +2204,7 @@ function openInspector(file) {
 }
 
 function closeInspector() {
+  setInspectorExpanded(false);
   inspector.classList.add('hidden');
   workspace.classList.add('no-inspector');
   state.selectedId = null;
@@ -2495,13 +2825,17 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'Escape') {
     if (pstModal.classList.contains('open')) { closePstModal(); return; }
+    if (inspector.classList.contains('expanded')) { setInspectorExpanded(false); return; }
     if (document.activeElement === q && q.value) { clearBtn.click(); }
     else if (!inspector.classList.contains('hidden')) closeInspector();
     return;
   }
   if (inInput) return;
 
-  if (e.key.toLowerCase() === 'a') {
+  if (e.key.toLowerCase() === 'f' && !inspector.classList.contains('hidden')) {
+    e.preventDefault();
+    setInspectorExpanded(!inspector.classList.contains('expanded'));
+  } else if (e.key.toLowerCase() === 'a') {
     e.preventDefault();
     toggleBrowseAllFiles();
   } else if (e.key.toLowerCase() === 'v') {
