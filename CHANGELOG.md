@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.0] - 2026-11-27
+### Changed (Major Architecture Upgrade)
+- **문서 검색 엔진을 SQLite 내장 FTS5 디스크 2-gram 인덱스로 전면 전환 (`app/server.py`)**:
+  - 대량 본문 색인(12,900건+ / `1.17 GB` DB) 환경에서 `docs` 전체 본문과 Python 인메모리 2-gram 인덱스가 **5.62 GB RAM**을 점유하고 서버 기동 시 1분 이상 멈추던 구조적 한계를 근본 해결
+  - 메모리에는 문서 경량 메타데이터(`id, path, status, size, mtime`, 약 `25 MB`)만 유지하고, 2글자 이상 문서 검색은 SQLite C 기반 `search` FTS5 2-gram 인덱스(`2~9 ms`) + SQLite 내부 C 필터링(`_sql_filter_doc_ids`, 장비번호 ASCII `LIKE`·접합 2-gram)으로 즉시 처리
+  - 문서가 5만 건 이상으로 증가해도 메모리 사용량 증가 및 기동 지연이 발생하지 않도록 설계
+
 ## [1.9.1] - 2026-11-25
 ### Improved
 - **검색 리스트 경량화·인스펙터 너비 확장 및 엑셀 미리보기 고속화 (`app/index.html`, `app/server.py`)**:

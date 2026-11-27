@@ -80,8 +80,8 @@ _EXCEL_PREVIEW_CACHE = OrderedDict()
 _CATALOG_LOCK = threading.Lock()
 _CATALOG_CACHE = {
     'sig': None, 'checked_at': 0.0,
-    'docs': [], 'aliases': [], 'folders': [], 'doc_pos_by_id': {},
-    'docs_bidx': None, 'aliases_bidx': None, 'folders_bidx': None, 'bidx_sig': None,
+    'docs': [], 'aliases': [], 'folders': [], 'doc_pos_by_id': {}, 'doc_by_id': {},
+    'aliases_bidx': None, 'folders_bidx': None,
 }
 
 QC_PREFIX = r'(?<![a-z0-9])q/?c[ \t]*[-‐‑–]?[ \t]*'
@@ -105,8 +105,6 @@ def _build_cache_entry(row, matched_alias=None):
     path = row['path']
     path_clean = clean(matched_alias or path)
     name_clean = clean(Path(path).name)
-    body = row['body'] or ''
-    body_clean = clean(body) if body else ''
     return {
         'id': row['id'],
         'path': path,
@@ -117,10 +115,10 @@ def _build_cache_entry(row, matched_alias=None):
         'extension': row['extension'],
         'size': row['size'],
         'mtime': row['mtime'],
-        'body_clean': body_clean,
+        'body_clean': '',
         'path_clean': path_clean,
         'name_clean': name_clean,
-        'text_all': f'{path_clean}\n{body_clean}' if body_clean else path_clean,
+        'text_all': path_clean,
         'matched_alias': matched_alias,
     }
 
@@ -234,26 +232,63 @@ def _rx_count_capped3(rx, text):
     return n
 
 
-def _schedule_docs_bigram_build(sig, docs, aliases, folders):
-    with _CATALOG_LOCK:
-        if _CATALOG_CACHE['bidx_sig'] == sig:
-            return
-        _CATALOG_CACHE['bidx_sig'] = sig
+def _sql_filter_doc_ids(conn, doc_ids, required_substrs, phrases, excludes, equipment_pairs, scope, live_seq=0):
+    """Filter candidate doc IDs inside SQLite C engine without transferring huge bodies to Python."""
+    if not doc_ids:
+        return set()
+    target_col = 'lower(body)' if scope == 'body' else "lower(path || char(10) || coalesce(body, ''))"
+    conds = []
+    params_base = []
+    eq_nums_set = {num for num, _ in equipment_pairs}
+    for s in required_substrs:
+        if len(s) >= 2 and s not in eq_nums_set:
+            conds.append(f'instr({target_col}, ?) > 0')
+            params_base.append(s)
+    for ph in phrases:
+        conds.append(f'instr({target_col}, ?) > 0')
+        params_base.append(ph)
+    for ex in excludes:
+        conds.append(f'instr({target_col}, ?) = 0')
+        params_base.append(ex)
+    for num, _ in equipment_pairs:
+        # SQLite ASCII LIKE is case-insensitive in-place (zero 500KB lower() copy!)
+        variants = (f'%qc{num}%', f'%qc-{num}%', f'%qc {num}%', f'%q/c{num}%', f'%q/c-{num}%', f'%q/c {num}%')
+        col_raw = 'body' if scope == 'body' else "path || char(10) || coalesce(body, '')"
+        or_expr = ' OR '.join(f'{col_raw} LIKE ?' for _ in variants)
+        conds.append(f'({or_expr})')
+        params_base.extend(variants)
 
-    def _worker():
-        try:
-            docs_bidx = build_bigram_index(docs)
-            aliases_bidx = build_bigram_index(aliases)
-            folders_bidx = build_bigram_index(folders)
-        except Exception:
-            return
-        with _CATALOG_LOCK:
-            if _CATALOG_CACHE['docs'] is docs:
-                _CATALOG_CACHE['docs_bidx'] = docs_bidx
-                _CATALOG_CACHE['aliases_bidx'] = aliases_bidx
-                _CATALOG_CACHE['folders_bidx'] = folders_bidx
+    if not conds:
+        return set(doc_ids)
 
-    threading.Thread(target=_worker, daemon=True).start()
+    where_extra = ' AND '.join(conds)
+    matched = set()
+    for i in range(0, len(doc_ids), 500):
+        if live_seq and live_seq != _LIVE_SEARCH_SEQ:
+            return None
+        batch = doc_ids[i:i + 500]
+        ph = ','.join('?' for _ in batch)
+        for row in conn.execute(f'select id from docs where id in ({ph}) and {where_extra}', batch + params_base):
+            matched.add(row[0])
+    return matched
+
+
+def _fts5_doc_ids(conn, query_bigrams, equipment_nums=()):
+    """Query SQLite disk-backed FTS5 2-gram index in native C (0 RAM, ~2-9ms)."""
+    parts = ['g' + bg.encode('utf-8').hex() for bg in query_bigrams[:12]]
+    if equipment_nums:
+        parts.append('(g7163 OR g712f)')
+        for num in equipment_nums:
+            d0 = num[0]
+            juncs = ['g' + (ch + d0).encode('utf-8').hex() for ch in ('c', '-', ' ', '\t')]
+            parts.append('(' + ' OR '.join(juncs) + ')')
+    if not parts:
+        return None
+    match_expr = ' '.join(parts)
+    try:
+        return [r[0] for r in conn.execute('select rowid from search where grams match ?', (match_expr,))]
+    except sqlite3.Error:
+        return None
 
 
 def _query_catalog_sig(c):
@@ -271,7 +306,7 @@ def _query_catalog_sig(c):
 
 
 def _apply_indexed_docs_inplace(doc_ids):
-    """Patch newly indexed doc rows directly into the in-memory cache + 2-gram index without a full rebuild."""
+    """Patch newly indexed doc metadata directly into the lightweight in-memory cache."""
     if not doc_ids:
         return False
     with _CATALOG_LOCK:
@@ -282,7 +317,7 @@ def _apply_indexed_docs_inplace(doc_ids):
     try:
         placeholders = ','.join('?' for _ in doc_ids)
         rows = c.execute(
-            f'select id,path,category,status,extension,size,mtime,body from docs where present=1 and id in ({placeholders})',
+            f'select id,path,category,status,extension,size,mtime from docs where present=1 and id in ({placeholders})',
             doc_ids,
         ).fetchall()
         new_sig, _ = _query_catalog_sig(c)
@@ -293,32 +328,22 @@ def _apply_indexed_docs_inplace(doc_ids):
     with _CATALOG_LOCK:
         docs = _CATALOG_CACHE['docs']
         pos_map = _CATALOG_CACHE['doc_pos_by_id']
-        docs_bidx = _CATALOG_CACHE['docs_bidx']
+        by_id = _CATALOG_CACHE['doc_by_id']
         if not docs or not pos_map:
             return False
         for doc_id, new_entry in entries:
             pos = pos_map.get(doc_id)
             if pos is None or pos >= len(docs):
                 continue
-            old_t = docs[pos]['text_all']
             docs[pos] = new_entry
-            if docs_bidx is not None:
-                new_t = new_entry['text_all']
-                old_bgs = {old_t[j:j + 2] for j in range(len(old_t) - 1)} if len(old_t) >= 2 else set()
-                new_bgs = ({new_t[j:j + 2] for j in range(len(new_t) - 1)} - old_bgs) if len(new_t) >= 2 else set()
-                for bg in new_bgs:
-                    arr = docs_bidx.get(bg)
-                    if arr is None:
-                        arr = array('I')
-                        docs_bidx[bg] = arr
-                    arr.append(pos)
+            by_id[doc_id] = new_entry
         _CATALOG_CACHE['sig'] = new_sig
         _CATALOG_CACHE['checked_at'] = time.monotonic()
     return True
 
 
 def get_catalog_cache_with_index(c=None, force=False):
-    """Return normalized in-memory document, alias, folder, and bigram caches, rebuilding only on DB change."""
+    """Return lightweight in-memory doc metadata (no bodies in RAM), aliases, folders, and lookup maps."""
     now = time.monotonic()
     with _CATALOG_LOCK:
         if not force and _CATALOG_CACHE['sig'] is not None and (now - _CATALOG_CACHE['checked_at']) < 30.0:
@@ -326,7 +351,7 @@ def get_catalog_cache_with_index(c=None, force=False):
                 _CATALOG_CACHE['docs'],
                 _CATALOG_CACHE['aliases'],
                 _CATALOG_CACHE['folders'],
-                _CATALOG_CACHE['docs_bidx'],
+                _CATALOG_CACHE['doc_by_id'],
                 _CATALOG_CACHE['aliases_bidx'],
                 _CATALOG_CACHE['folders_bidx'],
             )
@@ -341,29 +366,22 @@ def get_catalog_cache_with_index(c=None, force=False):
             old_sig = _CATALOG_CACHE['sig']
             if not force and old_sig == sig:
                 _CATALOG_CACHE['checked_at'] = now
-                docs = _CATALOG_CACHE['docs']
-                aliases = _CATALOG_CACHE['aliases']
-                folders = _CATALOG_CACHE['folders']
-                docs_bidx = _CATALOG_CACHE['docs_bidx']
-                aliases_bidx = _CATALOG_CACHE['aliases_bidx']
-                folders_bidx = _CATALOG_CACHE['folders_bidx']
-                need_bg = docs_bidx is None and bool(docs)
-                can_incr = False
-            elif (
+                return (
+                    _CATALOG_CACHE['docs'],
+                    _CATALOG_CACHE['aliases'],
+                    _CATALOG_CACHE['folders'],
+                    _CATALOG_CACHE['doc_by_id'],
+                    _CATALOG_CACHE['aliases_bidx'],
+                    _CATALOG_CACHE['folders_bidx'],
+                )
+            can_incr = (
                 not force
                 and old_sig is not None
-                and _CATALOG_CACHE['docs']
+                and bool(_CATALOG_CACHE['docs'])
                 and (old_sig[0], old_sig[2], old_sig[3], old_sig[4]) == (sig[0], sig[2], sig[3], sig[4])
                 and sig[1] > old_sig[1]
-            ):
-                docs = None
-                need_bg = False
-                can_incr = True
-                old_max_idx = old_sig[1]
-            else:
-                need_bg = False
-                can_incr = False
-                docs = None
+            )
+            old_max_idx = old_sig[1] if old_sig is not None else 0
 
         if can_incr:
             delta_ids = [
@@ -372,30 +390,25 @@ def get_catalog_cache_with_index(c=None, force=False):
                     (old_max_idx,),
                 )
             ]
-            if delta_ids and len(delta_ids) <= 200 and _apply_indexed_docs_inplace(delta_ids):
+            if delta_ids and len(delta_ids) <= 500 and _apply_indexed_docs_inplace(delta_ids):
                 with _CATALOG_LOCK:
                     return (
                         _CATALOG_CACHE['docs'],
                         _CATALOG_CACHE['aliases'],
                         _CATALOG_CACHE['folders'],
-                        _CATALOG_CACHE['docs_bidx'],
+                        _CATALOG_CACHE['doc_by_id'],
                         _CATALOG_CACHE['aliases_bidx'],
                         _CATALOG_CACHE['folders_bidx'],
                     )
 
-        if docs is not None:
-            if need_bg:
-                _schedule_docs_bigram_build(sig, docs, aliases, folders)
-            return docs, aliases, folders, docs_bidx, aliases_bidx, folders_bidx
-
         docs = [
             _build_cache_entry(r)
-            for r in c.execute('select id,path,category,status,extension,size,mtime,body from docs where present=1')
+            for r in c.execute('select id,path,category,status,extension,size,mtime from docs where present=1')
         ]
         aliases = [
             _build_cache_entry(r, matched_alias=r['matched_alias'])
             for r in c.execute("""
-                select d.id,d.path,d.category,d.status,d.extension,d.size,d.mtime,d.body,a.path as matched_alias
+                select d.id,d.path,d.category,d.status,d.extension,d.size,d.mtime,a.path as matched_alias
                 from photo_aliases p
                 join docs a on a.id=p.source_id and a.present=0 and a.size=p.size and a.mtime=p.source_mtime
                 join docs d on d.id=p.target_id and d.present=1 and d.size=p.size and d.mtime=p.target_mtime
@@ -406,6 +419,9 @@ def get_catalog_cache_with_index(c=None, force=False):
             for r in c.execute('select id,path,mtime from folders where present=1')
         ] if has_folders_tbl else []
         doc_pos_by_id = {d['id']: i for i, d in enumerate(docs)}
+        doc_by_id = {d['id']: d for d in docs}
+        aliases_bidx = build_bigram_index(aliases)
+        folders_bidx = build_bigram_index(folders)
 
         with _CATALOG_LOCK:
             _CATALOG_CACHE['sig'] = sig
@@ -414,37 +430,39 @@ def get_catalog_cache_with_index(c=None, force=False):
             _CATALOG_CACHE['aliases'] = aliases
             _CATALOG_CACHE['folders'] = folders
             _CATALOG_CACHE['doc_pos_by_id'] = doc_pos_by_id
-            _CATALOG_CACHE['docs_bidx'] = None
-            _CATALOG_CACHE['aliases_bidx'] = None
-            _CATALOG_CACHE['folders_bidx'] = None
-            _CATALOG_CACHE['bidx_sig'] = None
-        _schedule_docs_bigram_build(sig, docs, aliases, folders)
-        return docs, aliases, folders, None, None, None
+            _CATALOG_CACHE['doc_by_id'] = doc_by_id
+            _CATALOG_CACHE['aliases_bidx'] = aliases_bidx
+            _CATALOG_CACHE['folders_bidx'] = folders_bidx
+        return docs, aliases, folders, doc_by_id, aliases_bidx, folders_bidx
     finally:
         if own_conn:
             c.close()
 
 
 class _ChunkLoader:
-    """On-demand SQLite chunk loader using chunk_doc index; avoids holding millions of chunks in RAM."""
+    """On-demand SQLite connection & chunk loader using chunk_doc index."""
 
     def __init__(self):
         self._conn = None
         self._cache = {}
 
+    def conn(self):
+        if self._conn is None:
+            self._conn = connect()
+        return self._conn
+
     def get(self, doc_id):
         cached = self._cache.get(doc_id)
         if cached is not None:
             return cached
-        if self._conn is None:
-            self._conn = connect()
+        c = self.conn()
         rows = [
             {
                 'location': loc,
                 'text': text,
                 'method': method,
             }
-            for loc, text, method in self._conn.execute(
+            for loc, text, method in c.execute(
                 'select location,text,method from chunks where doc_id=? order by rowid',
                 (doc_id,),
             )
@@ -809,10 +827,102 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
         return None
 
     has_qc_equipment = bool(equipment_patterns)
+    fetched_bodies = {}
+    doc_fts_confirmed = set()
     if need_docs:
-        docs_cache, aliases_cache, folders_cache, docs_bidx, aliases_bidx, folders_bidx = get_catalog_cache_with_index()
+        docs_cache, aliases_cache, folders_cache, doc_by_id, aliases_bidx, folders_bidx = get_catalog_cache_with_index()
         if query_bigrams or has_qc_equipment:
-            docs_cand = _narrow_rows_by_bigrams(docs_cache, docs_bidx, query_bigrams, require_qc=has_qc_equipment)
+            eq_nums = tuple(num for num, _ in equipment_pairs)
+            fts_ids = _fts5_doc_ids(chunk_loader.conn(), query_bigrams, equipment_nums=eq_nums)
+            if live_seq and live_seq != _LIVE_SEARCH_SEQ:
+                return None
+            raw_docs = [doc_by_id[did] for did in fts_ids if did in doc_by_id] if fts_ids is not None else docs_cache
+            # Pre-filter by cheap metadata before touching SQLite doc bodies
+            docs_cand = []
+            for r in raw_docs:
+                if category and r['category'] != category:
+                    continue
+                if allowed_exts_set is not None and r['extension'] not in allowed_exts_set:
+                    continue
+                if scope == 'body' and r['status'] not in ('ready', 'partial'):
+                    continue
+                if path_filters and not all(pf in r['path_clean'] for pf in path_filters):
+                    continue
+                docs_cand.append(r)
+
+            fts5_exact_2gram = (
+                fts_ids is not None
+                and len(required_substrs) == 1
+                and len(required_substrs[0]) == 2
+                and not phrases
+                and not excludes
+                and not or_groups
+                and not equipment_pairs
+                and not rx_terms
+                and not record
+                and scope != 'body'
+                and not numeric_context
+            )
+            can_sql_filter = (
+                fts_ids is not None
+                and not or_groups
+                and not rx_terms
+                and not record
+                and not numeric_context
+            )
+            if fts5_exact_2gram:
+                doc_fts_confirmed.update(r['id'] for r in docs_cand)
+            elif can_sql_filter:
+                need_sql_ids = []
+                can_skip_path_hit = (not excludes and scope != 'body')
+                for r in docs_cand:
+                    if can_skip_path_hit:
+                        pc = r['path_clean']
+                        if (
+                            all(s in pc for s in required_substrs)
+                            and all(ph in pc for ph in phrases)
+                            and (not equipment_pairs or all(_equipment_match_count(pc, num, rx, cap=1) for num, rx in equipment_pairs))
+                        ):
+                            doc_fts_confirmed.add(r['id'])
+                            continue
+                    if r['status'] in ('ready', 'partial'):
+                        need_sql_ids.append(r['id'])
+                if need_sql_ids:
+                    sql_ok = _sql_filter_doc_ids(
+                        chunk_loader.conn(), need_sql_ids,
+                        required_substrs, phrases, excludes, equipment_pairs, scope, live_seq=live_seq,
+                    )
+                    if sql_ok is None:
+                        return None
+                    doc_fts_confirmed.update(sql_ok)
+                # Keep only confirmed docs so main loop skips non-matching FTS5 false positives instantly
+                docs_cand = [r for r in docs_cand if r['id'] in doc_fts_confirmed]
+            else:
+                need_body_ids = []
+                can_skip_path_hit = (not excludes and not record and scope != 'body' and not numeric_context and not or_groups and not rx_terms)
+                for r in docs_cand:
+                    if r['status'] not in ('ready', 'partial'):
+                        continue
+                    if can_skip_path_hit:
+                        pc = r['path_clean']
+                        if (
+                            all(s in pc for s in required_substrs)
+                            and all(ph in pc for ph in phrases)
+                            and (not equipment_pairs or all(_equipment_match_count(pc, num, rx, cap=1) for num, rx in equipment_pairs))
+                        ):
+                            continue
+                    need_body_ids.append(r['id'])
+                if need_body_ids:
+                    c_body = chunk_loader.conn()
+                    for i in range(0, len(need_body_ids), 500):
+                        if live_seq and live_seq != _LIVE_SEARCH_SEQ:
+                            return None
+                        batch = need_body_ids[i:i + 500]
+                        ph = ','.join('?' for _ in batch)
+                        for did, btxt in c_body.execute(f'select id, body from docs where id in ({ph})', batch):
+                            if btxt:
+                                fetched_bodies[did] = clean(btxt)
+
             if scope == 'body':
                 doc_rows = docs_cand
             else:
@@ -881,40 +991,47 @@ def _find_impl(query='', category='', scope='all', ext_filter='', sort_by='score
         path = r['path_clean']
         if path_filters and not all(pf in path for pf in path_filters):
             continue
-        body = r['body_clean']
-        text = body if scope == 'body' else r['text_all']
+        if is_mail or is_folder:
+            body = r['body_clean']
+            text = body if scope == 'body' else r['text_all']
+        else:
+            body = fetched_bodies.get(doc_id, '')
+            text = body if scope == 'body' else (f'{path}\n{body}' if body else path)
 
-        if req0 is not None:
-            if req0 not in text:
+        if doc_id not in doc_fts_confirmed:
+            if req0 is not None:
+                if req0 not in text:
+                    continue
+            elif required_substrs:
+                matched_req = True
+                for t in required_substrs:
+                    if t not in text:
+                        matched_req = False
+                        break
+                if not matched_req:
+                    continue
+            if has_qc_equipment and 'qc' not in text and 'q/c' not in text:
                 continue
-        elif required_substrs:
-            matched_req = True
-            for t in required_substrs:
-                if t not in text:
-                    matched_req = False
-                    break
-            if not matched_req:
+            if excludes and any(ex in text for ex in excludes):
                 continue
-        if has_qc_equipment and 'qc' not in text and 'q/c' not in text:
-            continue
-        if excludes and any(ex in text for ex in excludes):
-            continue
-        if equipment_pairs and not all(_equipment_match_count(text, num, rx, cap=1) for num, rx in equipment_pairs):
-            continue
-        if rx_terms and not all(rx.search(text) for rx in rx_terms):
-            continue
-        if phrases and not all(ph in text for ph in phrases):
-            continue
-        if or_groups and not all(any(alt in text for alt in grp) for grp in or_groups):
-            continue
-        if record and not has_date(text, record[1]):
-            continue
+            if equipment_pairs and not all(_equipment_match_count(text, num, rx, cap=1) for num, rx in equipment_pairs):
+                continue
+            if rx_terms and not all(rx.search(text) for rx in rx_terms):
+                continue
+            if phrases and not all(ph in text for ph in phrases):
+                continue
+            if or_groups and not all(any(alt in text for alt in grp) for grp in or_groups):
+                continue
+            if record and not has_date(text, record[1]):
+                continue
 
         if not in_active_folder:
             outside_matched_ids.add(doc_id)
             continue
 
-        if body:
+        if doc_id in doc_fts_confirmed:
+            score = 1 if r['status'] in ('ready', 'partial') else 0
+        elif body:
             score = _count_capped3(body, sc0) if sc0 is not None else sum(_count_capped3(body, s) for s in score_substrs)
             if equipment_pairs:
                 score += sum(_equipment_match_count(body, num, rx, cap=3) for num, rx in equipment_pairs)
